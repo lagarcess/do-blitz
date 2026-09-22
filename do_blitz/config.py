@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -11,6 +12,7 @@ class Settings:
     database_url: str | None = None
     public_base_url: str | None = None
     redis_url: str | None = None
+    rate_limit_shorten_per_min: int = 60
 
 
 def sqlalchemy_url(raw: str) -> str:
@@ -21,6 +23,17 @@ def sqlalchemy_url(raw: str) -> str:
     if raw.startswith("postgresql://"):
         return "postgresql+psycopg://" + raw[len("postgresql://") :]
     return raw
+
+
+def _nonneg_int(env: Mapping[str, str], name: str, default: int) -> int:
+    raw = env.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an int, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+    return value
 
 
 def load_settings(environ: dict[str, str] | None = None) -> Settings:
@@ -36,4 +49,5 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
         database_url=env.get("DATABASE_URL") or None,
         public_base_url=env.get("PUBLIC_BASE_URL") or None,
         redis_url=env.get("REDIS_URL") or None,
+        rate_limit_shorten_per_min=_nonneg_int(env, "RATE_LIMIT_SHORTEN_PER_MIN", 60),
     )
