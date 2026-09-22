@@ -7,6 +7,7 @@ FastAPI URL shortener. Shorten a long URL, 302 to it, read metadata. No update o
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | production / CI | Postgres URL. `postgres://`, `postgresql://`, or `postgresql+psycopg://`. |
+| `REDIS_URL` | no | Redis URL for the redirect cache (`redis://host:6379/0`). Unset uses a process-local memory cache. This repo does not provision DigitalOcean Managed Redis. |
 | `PUBLIC_BASE_URL` | no | Prefix for `shortURL`. Defaults to the incoming request base (`http://testserver` in tests). |
 | `PORT` | no | Listen port (default `8000`). Used by operators; uvicorn still needs `--port`. |
 | `LOG_LEVEL` | no | Default `info`. |
@@ -69,7 +70,7 @@ Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert 
 python3 -m pytest -q
 ```
 
-With `DATABASE_URL` unset, API tests use the in-memory store. CI starts a Postgres service and sets `DATABASE_URL` so the same tests run against `PostgresLinkStore`.
+With `DATABASE_URL` unset, API tests use the in-memory store. CI starts a Postgres service and sets `DATABASE_URL` so the same tests run against `PostgresLinkStore`. Redirect-cache tests use the process-local memory cache. Redis is optional and is not started in CI.
 
 ```bash
 export DATABASE_URL=postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz

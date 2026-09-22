@@ -10,6 +10,7 @@ class Settings:
     log_level: str = "info"
     database_url: str | None = None
     public_base_url: str | None = None
+    redis_url: str | None = None
 
 
 def sqlalchemy_url(raw: str) -> str:
@@ -34,4 +35,5 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
         log_level=env.get("LOG_LEVEL", "info"),
         database_url=env.get("DATABASE_URL") or None,
         public_base_url=env.get("PUBLIC_BASE_URL") or None,
+        redis_url=env.get("REDIS_URL") or None,
     )

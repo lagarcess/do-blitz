@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
+from do_blitz.cache import RedirectCache
 from do_blitz.codes import iter_candidate_codes
 from do_blitz.store import CodeAlreadyExists, Link, LinkStore
 
@@ -36,5 +37,11 @@ def get_link(store: LinkStore, code: str) -> Link | None:
     return store.get(code)
 
 
-def resolve_link(store: LinkStore, code: str) -> Link | None:
+def resolve_link(store: LinkStore, cache: RedirectCache, code: str) -> Link | None:
+    if cache.get(code) is not None:
+        return store.increment_hit_count(code)
+    link = store.get(code)
+    if link is None:
+        return None
+    cache.set(code, link.long_url)
     return store.increment_hit_count(code)
