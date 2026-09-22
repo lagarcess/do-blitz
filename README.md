@@ -7,7 +7,8 @@ FastAPI URL shortener. Shorten a long URL, 302 to it, read metadata. No update o
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | production / CI | Postgres URL. `postgres://`, `postgresql://`, or `postgresql+psycopg://`. |
-| `REDIS_URL` | no | Redis URL for the redirect cache (`redis://host:6379/0`). Unset uses a process-local memory cache. This repo does not provision DigitalOcean Managed Redis. |
+| `REDIS_URL` | no | Redis URL for the redirect cache and the shared shorten rate limiter (`redis://host:6379/0`). Unset uses process-local memory for both. This repo does not provision DigitalOcean Managed Redis. |
+| `RATE_LIMIT_SHORTEN_PER_MIN` | no | Max `POST /api/v1/data/shorten` requests per client IP per 60-second window (default `60`). `0` disables the limit. |
 | `PUBLIC_BASE_URL` | no | Prefix for `shortURL`. Defaults to the incoming request base (`http://testserver` in tests). |
 | `PORT` | no | Listen port (default `8000`). Used by operators; uvicorn still needs `--port`. |
 | `LOG_LEVEL` | no | Default `info`. |
@@ -61,6 +62,7 @@ Validation:
 
 - `longURL` must be `http` or `https` and at most 2048 characters (else 422)
 - Unknown code → 404
+- More than `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) shorten requests from one client IP in 60 seconds → 429. The first `X-Forwarded-For` hop is the client IP when that header is set.
 
 Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert collides.
 
@@ -70,7 +72,7 @@ Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert 
 python3 -m pytest -q
 ```
 
-With `DATABASE_URL` unset, API tests use the in-memory store. CI starts a Postgres service and sets `DATABASE_URL` so the same tests run against `PostgresLinkStore`. Redirect-cache tests use the process-local memory cache. Redis is optional and is not started in CI.
+With `DATABASE_URL` unset, API tests use the in-memory store. CI starts a Postgres service and sets `DATABASE_URL` so the same tests run against `PostgresLinkStore`. Redirect-cache and rate-limit tests use the process-local memory backends. Redis is optional and is not started in CI.
 
 ```bash
 export DATABASE_URL=postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz
