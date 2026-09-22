@@ -1,6 +1,6 @@
 # do-blitz
 
-Production-shaped FastAPI URL shortener for a time-boxed interview build. Mint a short code (random base62 or optional alias), 302 to the long URL, read metadata. Links are immutable after create — no update or delete.
+FastAPI URL shortener. Mint a short code (random base62 or optional alias), 302 to the long URL, read metadata. Links are immutable after create — no update or delete.
 
 Human-readable API docs: **`/redoc`** (primary). Swagger UI / try-it-out: `/docs` (secondary). Minimal shorten UI: `/`.
 
@@ -65,7 +65,7 @@ Without `DATABASE_URL`, API tests inject an in-memory store via fixtures. CI sta
 
 Target: **App Platform** (stateless app containers) + **Managed Postgres** (+ optional Valkey/Redis for cache and rate limits). Set `DATABASE_URL` (and optionally `REDIS_URL`, `PUBLIC_BASE_URL`, rate-limit env) on the app. The `Dockerfile` in this repo is the **App Platform build artifact** — not the local development story.
 
-App-tier HA needs ≥2 instances, but `basic-xxs`/`basic-xs` are capped at one instance — see the App Platform size vs HA note in [`ARCHITECTURE.md`](./ARCHITECTURE.md). This interview deploy stayed 1× `basic-xxs` for cost; Postgres standby covers data-plane durability. Capacity BOTE and other decision trades live in the same doc.
+App-tier HA needs ≥2 instances, but `basic-xxs`/`basic-xs` are capped at one instance — see the App Platform size vs HA note in [`ARCHITECTURE.md`](./ARCHITECTURE.md). This deploy stayed 1× `basic-xxs` for cost; Postgres standby covers data-plane durability. Capacity BOTE and other decision trades live in the same doc.
 
 ## Out of scope here
 
