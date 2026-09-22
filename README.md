@@ -1,13 +1,13 @@
 # do-blitz
 
-FastAPI URL shortener. Create a short code, 302 to the original URL, read metadata. No update or delete.
+FastAPI URL shortener. Shorten a long URL, 302 to it, read metadata. No update or delete.
 
 ## Environment
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | production / CI | Postgres URL. `postgres://`, `postgresql://`, or `postgresql+psycopg://`. |
-| `PUBLIC_BASE_URL` | no | Prefix for `short_url`. Defaults to the incoming request base (`http://testserver` in tests). |
+| `PUBLIC_BASE_URL` | no | Prefix for `shortURL`. Defaults to the incoming request base (`http://testserver` in tests). |
 | `PORT` | no | Listen port (default `8000`). Used by operators; uvicorn still needs `--port`. |
 | `LOG_LEVEL` | no | Default `info`. |
 
@@ -35,34 +35,33 @@ python3 -m pip install -r requirements.txt
 python3 -m uvicorn do_blitz.app:app --host 0.0.0.0 --port 8000
 ```
 
+OpenAPI: `http://localhost:8000/docs`.
+
 ## API
 
 ```bash
 curl -s localhost:8000/health
 # {"status":"ok"}
 
-curl -s -X POST localhost:8000/api/v1/links \
+curl -s -X POST localhost:8000/api/v1/data/shorten \
   -H 'content-type: application/json' \
-  -d '{"url":"https://example.com/page","alias":null}'
-# 201 {"code":"…","short_url":"http://127.0.0.1:8000/…","long_url":"https://example.com/page","created_at":"…","hits":0}
+  -d '{"longURL":"https://example.com/page"}'
+# 201 {"code":"CQfE0v","shortURL":"http://127.0.0.1:8000/api/v1/short/CQfE0v","longURL":"https://example.com/page","created_at":"…","hits":0}
 
-curl -s -X POST localhost:8000/api/v1/links \
-  -H 'content-type: application/json' \
-  -d '{"url":"https://example.com/page","alias":"MyLink1"}'
+curl -sI localhost:8000/api/v1/short/CQfE0v
+# 302 Found
+# Location: https://example.com/page
 
-curl -sI localhost:8000/MyLink1
-# 302 Location: https://example.com/page
-
-curl -s localhost:8000/api/v1/links/MyLink1
+curl -s localhost:8000/api/v1/data/CQfE0v
+# {"code":"CQfE0v","shortURL":"http://127.0.0.1:8000/api/v1/short/CQfE0v","longURL":"https://example.com/page","created_at":"…","hits":1}
 ```
 
 Validation:
 
-- URL must be `http` or `https` (else 422)
-- Alias, if set: `[0-9a-zA-Z]`, 3–32 chars (else 422). Taken alias → 409
+- `longURL` must be `http` or `https` and at most 2048 characters (else 422)
 - Unknown code → 404
 
-Auto codes are base62. Length starts at 6 and grows if the insert collides.
+Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert collides.
 
 ## Tests
 
