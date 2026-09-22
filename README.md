@@ -4,6 +4,32 @@ FastAPI URL shortener. Mint a short code (random base62 or optional alias), 302 
 
 Human-readable API docs: **`/redoc`** (primary). Swagger UI / try-it-out: `/docs` (secondary). Minimal shorten UI: `/`.
 
+## Demo Kit
+
+Live App Platform:
+
+| | |
+| --- | --- |
+| UI | https://do-blitz-9tovc.ondigitalocean.app/ |
+| ReDoc | https://do-blitz-9tovc.ondigitalocean.app/redoc |
+| Swagger | https://do-blitz-9tovc.ondigitalocean.app/docs |
+| Health | https://do-blitz-9tovc.ondigitalocean.app/health |
+| Repo | https://github.com/lagarcess/do-blitz |
+
+Example flow: open the UI → paste a `longURL` → optional alias → copy `shortURL` → open it in a browser → confirm **302**. Or curl (GET, not HEAD):
+
+```bash
+curl -sS -X POST https://do-blitz-9tovc.ondigitalocean.app/api/v1/data/shorten \
+  -H 'content-type: application/json' \
+  -d '{"longURL":"https://example.com/page"}'
+# then, with the returned code:
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://do-blitz-9tovc.ondigitalocean.app/api/v1/short/<code>
+# expect: 302 https://example.com/page
+```
+
+Local OrbStack steps stay under **Local run (OrbStack)** below.
+
 ## API
 
 | Method | Path | Result |
