@@ -58,6 +58,8 @@ flowchart TD
 
 Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment). Sequence detail, rate-limit / 409 / 404 branches: [`ARCHITECTURE.md`](./ARCHITECTURE.md). Module map: see **Package map** in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
+More in [`ARCHITECTURE.md`](./ARCHITECTURE.md): [Problem scope](./ARCHITECTURE.md#problem-scope) · [High level design](./ARCHITECTURE.md#high-level-design) · [Deep dive](./ARCHITECTURE.md#deep-dive) · [Wrap up](./ARCHITECTURE.md#wrap-up).
+
 ## API
 
 | Method | Path | Result |

@@ -1,5 +1,32 @@
 # Architecture
 
+## Contents
+
+- [Package map](#package-map)
+  - [Runtime](#runtime)
+  - [Tests (by topic)](#tests-by-topic)
+  - [Ship](#ship)
+- [Diagram](#diagram)
+  - [High level — Create](#high-level--create)
+  - [High level — Redirect](#high-level--redirect)
+  - [Sequence — Create and Redirect](#sequence--create-and-redirect)
+  - [Sequence — Metadata (no cache, no hit bump)](#sequence--metadata-no-cache-no-hit-bump)
+  - [Path notes](#path-notes)
+- [Problem scope](#problem-scope)
+- [High level design](#high-level-design)
+- [Deep dive](#deep-dive)
+  - [API](#api)
+  - [Data model (`links`)](#data-model-links)
+  - [Storage, cache, and rate limit](#storage-cache-and-rate-limit)
+  - [Scale (BOTE, not encoded in code)](#scale-bote-not-encoded-in-code)
+  - [Web server scaling](#web-server-scaling)
+  - [Database scaling](#database-scaling)
+  - [Analytics](#analytics)
+  - [HA, uniqueness, idempotency](#ha-uniqueness-idempotency)
+  - [Availability, consistency, and reliability](#availability-consistency-and-reliability)
+  - [Decision trades](#decision-trades)
+- [Wrap up](#wrap-up)
+
 ## Package map
 
 ### Runtime
@@ -170,7 +197,23 @@ Metadata reads Postgres only. It does not use Cache and does not increment `hit_
 
 **IDs:** random base62 `code` is the primary key (optional alias uses the same column). No separate numeric id and no hash of the long URL. At much higher write QPS, a distributed unique ID encoded as base62 is the scale alternative; keep random base62 plus the unique constraint for now.
 
-## API
+## Problem scope
+
+What we built: mint a short code (random base62 or optional alias), redirect with **302** to the long URL, and read metadata (`hits`, `last_accessed_at`). Links are immutable after create — no update or delete.
+
+Constraints in force: Postgres via `DATABASE_URL` for durable storage; optional Redis/Valkey via `REDIS_URL` for redirect cache and create rate limit; redirect under `/api/v1/short/{code}`.
+
+Out of scope here: DigitalOcean tokens and provisioning (App Platform / Managed Postgres / Managed Redis), auth, update/delete of links, click-history analytics beyond `hits` + `last_accessed_at`, custom domain, and root `/{code}` redirects.
+
+## High level design
+
+Clients hit a load balancer in front of stateless app instances. Postgres holds durable `links` rows. Cache (Redis when configured, else process-local) is on the **redirect** path only — create never writes it. Rate limit applies to create (`POST /api/v1/data/shorten`), not redirect.
+
+Flow pictures and path notes sit under [Diagram](#diagram) above. File ownership is under [Package map](#package-map). Details and scale notes are under [Deep dive](#deep-dive).
+
+## Deep dive
+
+### API
 
 | Method | Path | Result |
 | --- | --- | --- |
@@ -182,7 +225,7 @@ Metadata reads Postgres only. It does not use Cache and does not increment `hit_
 
 Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`. `last_accessed_at` answers "when was this link last clicked?". `hits` still answers how many times.
 
-## Data model (`links`)
+### Data model (`links`)
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -209,7 +252,7 @@ Validation at the HTTP boundary (Pydantic). Humans should use **ReDoc at `/redoc
 
 Auto codes use `[0-9a-zA-Z]` only. Generation starts at length 6 and grows on collision up to 12.
 
-## Storage
+### Storage, cache, and rate limit
 
 `LinkStore` is the persistence interface. The running service requires `DATABASE_URL` and uses `PostgresLinkStore` (SQLAlchemy 2.x + psycopg). `code` is the primary key (unique). `build_store` fails fast without `DATABASE_URL` unless `allow_memory=True` (pytest fixtures only). CI sets `DATABASE_URL` and exercises Postgres.
 
@@ -217,7 +260,7 @@ Auto codes use `[0-9a-zA-Z]` only. Generation starts at length 6 and grows on co
 
 `RateLimiter` counts `POST /api/v1/data/shorten` per client IP in a 60-second fixed window. Production uses `RedisRateLimiter` when `REDIS_URL` is set so every app instance shares the same counters. Otherwise the process uses `MemoryRateLimiter` (per instance). The client IP is the first `X-Forwarded-For` hop when that header is present, else `request.client.host`. That hop is spoofable unless the App Platform / load balancer sanitizes `X-Forwarded-For` (trusted proxy). `RATE_LIMIT_SHORTEN_PER_MIN` defaults to 60. `0` disables the limit. Redirect is not rate-limited.
 
-## Scale (BOTE, not encoded in code)
+### Scale (BOTE, not encoded in code)
 
 Lucas planning numbers. The process does not preallocate 365B rows or hundreds of TB.
 
@@ -233,13 +276,13 @@ Implications:
 - `GET /api/v1/short/{shortCode}` is the hot read path (cache, then DB lookup, plus `hit_count` increment)
 - A 6-character base62 space is 62^6 ≈ 56.8B codes. Collision then lengthens. 7 characters is 62^7 ≈ 3.5T
 
-## Web server scaling
+### Web server scaling
 
 The app servers hold no session state. App Platform puts a load balancer in front of them. You add or remove containers to change capacity. Sticky sessions are not used. Durable state lives in Postgres (`DATABASE_URL`). The optional redirect cache and the rate limiter live in Redis/Valkey when `REDIS_URL` is set.
 
 App Platform high availability needs at least two containers so the load balancer has a failover target. See [App Platform limits](https://docs.digitalocean.com/products/app-platform/details/limits/). Autoscaling is available on eligible plans. CPU-based autoscaling needs dedicated CPUs. Request-based autoscaling works on shared or dedicated CPUs. See [How to scale apps](https://docs.digitalocean.com/products/app-platform/how-to/scale-app/).
 
-### App Platform size vs HA (this session)
+#### App Platform size vs HA (this session)
 
 DigitalOcean App Platform `basic-xxs` / `basic-xs` allow **max `instance_count=1`**. HA with `instance_count≥2` requires a larger slug (in practice `professional-xs` was the smallest size that accepted two instances).
 
@@ -249,17 +292,17 @@ DigitalOcean App Platform `basic-xxs` / `basic-xs` allow **max `instance_count=1
 
 **Why:** app-tier HA costs more than this account needed for the dress rehearsal; durability for stored links already sits on Managed Postgres standby.
 
-## Database scaling
+### Database scaling
 
 Create and redirect uniqueness stay on one Postgres primary. A managed standby replicates that primary for failover and optional read traffic. See [How to add standby nodes](https://docs.digitalocean.com/products/databases/postgresql/how-to/add-standby-nodes/). Vertical growth and replicas come first. Sharding a unique `code` primary key across many writers is a last step, used when one primary cannot hold the write rate or the 365B-row store from the scale notes above.
 
 Postgres is the store because the unique constraint on `code` is the concurrency control, creates need a transaction, and DigitalOcean Managed Databases can run that engine with a standby. The [Managed Databases SLA](https://www.digitalocean.com/sla/databases) is 99.95% monthly uptime for a cluster with standby nodes and 99.5% without.
 
-## Analytics
+### Analytics
 
 `hit_count` (API field `hits`) is how many times the short URL was clicked. `last_accessed_at` is when it was last clicked (null until the first redirect). Time-series click analytics still need an event log or warehouse, which this service does not write.
 
-## HA, uniqueness, idempotency
+### HA, uniqueness, idempotency
 
 Target deploy: App Platform, multiple app instances, Managed Postgres. Redis/Valkey is optional (`REDIS_URL`). This repo does not create DigitalOcean resources; App Platform + Postgres + Valkey are provisioned outside this repo when deploying.
 
@@ -269,25 +312,21 @@ Create is not naturally idempotent. A client that retries after a lost 201 can i
 
 `hit_count` increment is a single `UPDATE … SET hit_count = hit_count + 1, last_accessed_at = <now>` per redirect.
 
-## Availability, consistency, and reliability
+### Availability, consistency, and reliability
 
-### Availability
+#### Availability
 
 The [App Platform SLA](https://www.digitalocean.com/sla/app-platform) commits to 99.95% monthly uptime per App Component Instance (ACI). The [Managed Databases SLA](https://www.digitalocean.com/sla/databases) commits to 99.95% monthly uptime for a cluster with standby nodes and 99.5% without. App Platform HA needs at least two containers so the load balancer can fail over. See [App Platform limits](https://docs.digitalocean.com/products/app-platform/details/limits/).
 
-### Consistency
+#### Consistency
 
 Create is strongly consistent. The unique primary key on `code` is the source of truth. Codes are immutable, so `long_url` does not change after insert. The first redirect after create can miss the cache and read Postgres. That is a brief cold cache, not a stale `long_url`. Redirect increments `hit_count` / `last_accessed_at` **before** returning the 302; if that write fails, the handler errors (no `Location` / no silent 302). Concurrent redirects can still interleave on the counter itself (atomic SQL `hit_count = hit_count + 1`).
 
-### Reliability
+#### Reliability
 
 Managed Postgres with a standby fails over automatically. See [PostgreSQL features](https://docs.digitalocean.com/products/databases/postgresql/details/features/). Daily backups and seven-day point-in-time recovery cover accidental loss. See [How to restore from backups](https://docs.digitalocean.com/products/databases/postgresql/how-to/restore-from-backups/). `PostgresLinkStore` uses SQLAlchemy `pool_pre_ping=True` so a new connection replaces one that died during a brief failover blip.
 
-## Out of scope
-
-DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisioning, update/delete, auth.
-
-## Decision trades
+### Decision trades
 
 - Codes: random base62 mint + DB unique constraint (not hash of URL) → no hash-collision rings; rare insert races retry/lengthen 6→12.
 - IDs stay random base62 (no Snowflake or range-counter generator) → enough uniqueness at current write QPS; a distributed ID encoded as base62 is the scale alternative when collision retries become the bottleneck.
@@ -302,3 +341,11 @@ DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisionin
 - Database: one Postgres primary plus a standby before any shard → unique `code` and transactions stay on one writer. Shard only when that primary cannot hold writes or the 365B-row store.
 - Analytics: `hits` is how many clicks, `last_accessed_at` is the last click time → last-click only. An event log or warehouse is the path for a click history.
 - Custom alias: optional `alias` on create, unique `code` constraint → 409 on conflict. Reserved path tokens stay out of the code space.
+
+## Wrap up
+
+**Demo:** live UI, ReDoc, Swagger, health, and curl 302 happy path — [Demo Kit in README](./README.md#demo-kit).
+
+**Accepted ops choices for this deploy:** 1× App Platform `basic-xxs` (app-tier HA needs a larger size for ≥2 instances); `/health` checks the process plus a Postgres ping; no custom domain.
+
+**Where to go next:** custom domain; shorter public path `/{code}` if the locked API moves; raise app size then `instance_count` for platform LB failover.
