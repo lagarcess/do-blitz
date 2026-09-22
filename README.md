@@ -16,7 +16,7 @@ Live App Platform:
 | Health | https://do-blitz-9tovc.ondigitalocean.app/health |
 | Repo | https://github.com/lagarcess/do-blitz |
 
-Example flow: open the UI → paste a `longURL` → optional alias → copy `shortURL` → open it in a browser → confirm **302**. Or curl (GET, not HEAD):
+Walkthrough: open the UI → paste a `longURL` (optional alias) → copy `shortURL` → open it (**302**) → `GET /api/v1/data/{code}` shows `hits` / `last_accessed_at`. Or curl (GET, not HEAD) that prints **302** + redirect URL:
 
 ```bash
 curl -sS -X POST https://do-blitz-9tovc.ondigitalocean.app/api/v1/data/shorten \
