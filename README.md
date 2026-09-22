@@ -63,9 +63,9 @@ Without `DATABASE_URL`, API tests inject an in-memory store via fixtures. CI sta
 
 ## Deploy shape (DigitalOcean)
 
-Target: **App Platform** (stateless app containers) + **Managed Postgres**. Set `DATABASE_URL` (and optionally `REDIS_URL`, `PUBLIC_BASE_URL`, rate-limit env) on the app. The `Dockerfile` in this repo is the **App Platform build artifact** — not the local development story.
+Target: **App Platform** (stateless app containers) + **Managed Postgres** (+ optional Valkey/Redis for cache and rate limits). Set `DATABASE_URL` (and optionally `REDIS_URL`, `PUBLIC_BASE_URL`, rate-limit env) on the app. The `Dockerfile` in this repo is the **App Platform build artifact** — not the local development story.
 
-HA notes, capacity BOTE, and decision trades: see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+App-tier HA needs ≥2 instances, but `basic-xxs`/`basic-xs` are capped at one instance — see the App Platform size vs HA note in [`ARCHITECTURE.md`](./ARCHITECTURE.md). This interview deploy stayed 1× `basic-xxs` for cost; Postgres standby covers data-plane durability. Capacity BOTE and other decision trades live in the same doc.
 
 ## Out of scope here
 

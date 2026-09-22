@@ -160,9 +160,19 @@ Implications:
 
 ## Web server scaling
 
-The app servers hold no session state. App Platform puts a load balancer in front of them. You add or remove containers to change capacity. Sticky sessions are not used. Durable state lives in Postgres (`DATABASE_URL`). The optional redirect cache and the rate limiter live in Redis when `REDIS_URL` is set.
+The app servers hold no session state. App Platform puts a load balancer in front of them. You add or remove containers to change capacity. Sticky sessions are not used. Durable state lives in Postgres (`DATABASE_URL`). The optional redirect cache and the rate limiter live in Redis/Valkey when `REDIS_URL` is set.
 
 App Platform high availability needs at least two containers so the load balancer has a failover target. See [App Platform limits](https://docs.digitalocean.com/products/app-platform/details/limits/). Autoscaling is available on eligible plans. CPU-based autoscaling needs dedicated CPUs. Request-based autoscaling works on shared or dedicated CPUs. See [How to scale apps](https://docs.digitalocean.com/products/app-platform/how-to/scale-app/).
+
+### App Platform size vs HA (this session)
+
+DigitalOcean App Platform `basic-xxs` / `basic-xs` allow **max `instance_count=1`**. HA with `instance_count≥2` requires a larger slug (in practice `professional-xs` was the smallest size that accepted two instances).
+
+**Prod HA path:** move the app component to a size that allows ≥2 instances so the platform LB can fail over (matches DO App Platform HA guidance).
+
+**This interview session:** stay **1× `basic-xxs`** for cost after briefly trying 2× `professional-xs`. Accept a single-instance app tier. Managed Postgres keeps multi-node standby for data-plane durability; Valkey remains the shared cache and rate-limit plane.
+
+**Why:** app-tier HA costs more than this account needed for the dress rehearsal; durability for stored links already sits on Managed Postgres standby.
 
 ## Database scaling
 
@@ -213,7 +223,7 @@ DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisionin
 - Scale BOTE in docs only → design target; not pre-provisioned capacity.
 - Cache: Redis when `REDIS_URL` is set, process-local memory otherwise → no DigitalOcean Managed Redis; CI and tests stay offline.
 - Rate limit: in-process fixed window by default, Redis when `REDIS_URL` is set → instances share one counter; 429 after `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) per client IP on `POST /api/v1/data/shorten`. Redirect stays unlimited so a viral link or a shared NAT is not blocked.
-- App tier: stateless App Platform containers behind the platform load balancer, no sticky sessions → scale by adding or removing instances. HA needs at least two containers for load-balancer failover. Autoscaling is plan-dependent.
+- App tier: stateless App Platform containers behind the platform LB, no sticky sessions → scale by adding or removing instances. DO `basic-xxs`/`basic-xs` max `instance_count=1`; app HA (≥2) needs a larger slug (e.g. `professional-xs`). This session: **1× basic-xxs** for cost; prod HA would scale size then instances. Autoscaling is plan-dependent.
 - Database: one Postgres primary plus a standby before any shard → unique `code` and transactions stay on one writer. Shard only when that primary cannot hold writes or the 365B-row store.
 - Analytics: `hits` is how many clicks, `last_accessed_at` is the last click time → last-click only. An event log or warehouse is the path for a click history.
 - Custom alias: optional `alias` on create, unique `code` constraint → 409 on conflict. Reserved path tokens stay out of the code space.
