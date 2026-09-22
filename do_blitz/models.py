@@ -52,8 +52,8 @@ class ShortenIn(BaseModel):
             pattern=r"^[0-9a-zA-Z]+$",
             description=(
                 "Optional custom short code. Base62 [0-9a-zA-Z], 3-32 characters. "
-                "Reserved names api, health, docs, short, data, and v1 are rejected "
-                "(case-insensitive). Omit to mint a random code."
+                "Reserved names api, health, docs, redoc, static, short, data, and v1 "
+                "are rejected (case-insensitive). Omit to mint a random code."
             ),
             examples=["promo1"],
         ),

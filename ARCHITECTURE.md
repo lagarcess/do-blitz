@@ -33,7 +33,7 @@
 
 | Concern | File | Look here for |
 | --- | --- | --- |
-| HTTP routes, status codes, XFF, wiring | `do_blitz/app.py` | `create_app`, `/health`, `/`, shorten, metadata, redirect |
+| HTTP routes, status codes, XFF, wiring | `do_blitz/app.py` | `create_app`, `/health`, `/`, shorten, metadata, `/{code}` + `/api/v1/short/{code}` redirect, `_short_url` |
 | Request/response shapes + URL/alias validation | `do_blitz/models.py` | `ShortenIn`, `LinkOut`, `_http_https_url`, `_optional_alias` |
 | Env/settings | `do_blitz/config.py` | `Settings`, `load_settings`, `sqlalchemy_url` |
 | Create / get / resolve (hits + last_accessed) | `do_blitz/service.py` | `create_link`, `get_link`, `resolve_link` |
@@ -92,7 +92,7 @@ Create does **not** touch Cache.
 
 ```mermaid
 flowchart TD
-  subgraph Redirect["GET /api/v1/short/{code}"]
+  subgraph Redirect["GET /{code} (compat GET /api/v1/short/{code})"]
     U2[Client] --> LB2[Load balancer]
     LB2 --> App2[App]
     App2 -->|get code| Cache[(Cache Redis when configured)]
@@ -140,8 +140,8 @@ sequenceDiagram
     end
 
     rect rgb(255, 248, 240)
-    Note over Client,PG: Redirect GET /api/v1/short/{code}
-    Client->>LB: GET /api/v1/short/{code}
+    Note over Client,PG: Redirect GET /{code} (compat GET /api/v1/short/{code})
+    Client->>LB: GET /{code}
     LB->>App: forward
     App->>Cache: get code
     alt cache hit
@@ -201,9 +201,9 @@ Metadata reads Postgres only. It does not use Cache and does not increment `hit_
 
 What we built: mint a short code (random base62 or optional alias), redirect with **302** to the long URL, and read metadata (`hits`, `last_accessed_at`). Links are immutable after create — no update or delete.
 
-Constraints in force: Postgres via `DATABASE_URL` for durable storage; optional Redis/Valkey via `REDIS_URL` for redirect cache and create rate limit; redirect under `/api/v1/short/{code}`.
+Constraints in force: Postgres via `DATABASE_URL` for durable storage; optional Redis/Valkey via `REDIS_URL` for redirect cache and create rate limit; public redirect under `/{code}` with compat `GET /api/v1/short/{code}`.
 
-Out of scope here: DigitalOcean tokens and provisioning (App Platform / Managed Postgres / Managed Redis), auth, update/delete of links, click-history analytics beyond `hits` + `last_accessed_at`, custom domain, and root `/{code}` redirects.
+Out of scope here: DigitalOcean tokens and provisioning (App Platform / Managed Postgres / Managed Redis), auth, update/delete of links, click-history analytics beyond `hits` + `last_accessed_at`, and custom domain.
 
 ## High level design
 
@@ -219,7 +219,8 @@ Flow pictures and path notes sit under [Diagram](#diagram) above. File ownership
 | --- | --- | --- |
 | POST | `/api/v1/data/shorten` | 201 metadata. Body `{"longURL": "<string>", "alias": "<optional>"}`. 409 if `alias` is already a code. 429 after `RATE_LIMIT_SHORTEN_PER_MIN` requests in a 60-second window from the same client IP. |
 | GET | `/api/v1/data/{shortCode}` | 200 metadata JSON. No redirect. Unknown code is 404. |
-| GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`) and sets `last_accessed_at`. |
+| GET | `/{code}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`) and sets `last_accessed_at`. Reserved first-path tokens are not treated as codes. |
+| GET | `/api/v1/short/{shortCode}` | Same **302** as `/{code}` (compat). |
 | GET | `/health` | 200 `{"status":"ok"}`. |
 | GET | `/` | Demo UI (static). |
 
@@ -229,22 +230,22 @@ Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`,
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `code` | text / varchar, unique PK | base62 public key |
+| `code` | text / varchar, unique PK | base62 public key. This is the only public identifier stored. |
 | `long_url` | text | original URL |
 | `created_at` | timestamptz | insert time |
 | `hit_count` | bigint, default 0 | incremented on redirect |
 | `last_accessed_at` | timestamptz, null | set on each successful redirect |
 
+There is **no** `shortURL` column. Postgres stores `code` only. `_short_url` in `do_blitz/app.py` composes the API field at response time as `{PUBLIC_BASE_URL or request base}/{code}`. Changing the public domain or path does not rewrite rows.
+
 Rows are immutable aside from `hit_count` and `last_accessed_at`. No update/delete routes and no soft-delete column.
 Each create may mint a **new** code for the same `long_url` (no “same URL → same code” idempotency unless locked later).
 API JSON still names the counter `hits` (maps from `hit_count`).
 
-`shortURL` is `{PUBLIC_BASE_URL or request base}/api/v1/short/{code}`.
-
 Validation at the HTTP boundary (Pydantic). Humans should use **ReDoc at `/redoc`** (primary); Swagger UI at `/docs` is secondary for try-it-out:
 
 - `longURL` must be `http` or `https`, max 2048 characters
-- `alias` is optional. When present it must be base62 `[0-9a-zA-Z]`, length 3-32, and must not be a reserved name (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive)
+- `alias` is optional. When present it must be base62 `[0-9a-zA-Z]`, length 3-32, and must not be a reserved name (`api`, `health`, `docs`, `redoc`, `static`, `short`, `data`, `v1`, case-insensitive). `GET /{code}` also rejects those names plus `openapi.json` so it cannot steal `/health`, `/docs`, `/redoc`, `/openapi.json`, `/api`, or `/static`.
 - taken `alias` → 409
 - bad body or bad alias → 422
 - invalid short URL (unknown code) → 404
@@ -273,7 +274,7 @@ Implications:
 
 - Managed Postgres for the durable unique `code` index
 - App Platform multi-instance; uniqueness is the database constraint, not an in-process lock
-- `GET /api/v1/short/{shortCode}` is the hot read path (cache, then DB lookup, plus `hit_count` increment)
+- `GET /{code}` (and compat `GET /api/v1/short/{shortCode}`) is the hot read path (cache, then DB lookup, plus `hit_count` increment)
 - A 6-character base62 space is 62^6 ≈ 56.8B codes. Collision then lengthens. 7 characters is 62^7 ≈ 3.5T
 
 ### Web server scaling
@@ -333,7 +334,7 @@ Managed Postgres with a standby fails over automatically. See [PostgreSQL featur
 - Redirect: 302 not 301 → safer for hit counting / cache; can flip to 301 later.
 - Immutable links: no update/delete → simpler model; no correction path.
 - Store: `DATABASE_URL` required at runtime (Postgres); `MemoryLinkStore` only via `allow_memory=True` in tests → no silent in-memory prod.
-- Redirect path under `/api/v1/short/{code}` → matches locked API; full `shortURL` longer than root `/{code}`.
+- Public short URL is `/{code}`; `GET /api/v1/short/{code}` stays for compat. `shortURL` is composed at runtime from public base + `code`, not stored. Reserved first-path tokens stay out of the code space so `/{code}` cannot steal health, docs, or API mounts.
 - Scale BOTE in docs only → design target; not pre-provisioned capacity.
 - Cache: Redis when `REDIS_URL` is set, process-local memory otherwise → no DigitalOcean Managed Redis; CI and tests stay offline.
 - Rate limit: in-process fixed window by default, Redis when `REDIS_URL` is set → instances share one counter; 429 after `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) per client IP on `POST /api/v1/data/shorten`. Redirect stays unlimited so a viral link or a shared NAT is not blocked.
@@ -348,4 +349,4 @@ Managed Postgres with a standby fails over automatically. See [PostgreSQL featur
 
 **Accepted ops choices for this deploy:** 1× App Platform `basic-xxs` (app-tier HA needs a larger size for ≥2 instances); `/health` checks the process plus a Postgres ping; no custom domain.
 
-**Where to go next:** custom domain; shorter public path `/{code}` if the locked API moves; raise app size then `instance_count` for platform LB failover.
+**Where to go next:** custom domain; raise app size then `instance_count` for platform LB failover.

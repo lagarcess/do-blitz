@@ -8,11 +8,25 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from do_blitz.cache import RedirectCache, build_cache
+from do_blitz.codes import is_reserved_code
 from do_blitz.config import Settings, load_settings
 from do_blitz.models import HealthOut, LinkOut, ShortenIn
 from do_blitz.rate_limit import RateLimiter, WINDOW_SECONDS, build_limiter
 from do_blitz.service import create_link, get_link, resolve_link
 from do_blitz.store import CodeAlreadyExists, Link, LinkStore, build_store
+
+_REDIRECT_RESPONSES = {
+    302: {
+        "description": "Found. Location is the original long URL.",
+        "headers": {
+            "Location": {
+                "description": "Original long URL",
+                "schema": {"type": "string", "format": "uri"},
+            }
+        },
+    },
+    404: {"description": "Invalid short URL. Code is not in the database."},
+}
 
 
 def _client_ip(request: Request) -> str:
@@ -28,7 +42,7 @@ def _client_ip(request: Request) -> str:
 
 def _short_url(request: Request, code: str, settings: Settings) -> str:
     base = (settings.public_base_url or str(request.base_url)).rstrip("/")
-    return f"{base}/api/v1/short/{code}"
+    return f"{base}/{code}"
 
 
 def _out(link: Link, request: Request, settings: Settings) -> LinkOut:
@@ -63,10 +77,26 @@ def create_app(
     app.state.cache = cache
     app.state.limiter = limiter
 
+    def _redirect(short_code: str) -> RedirectResponse:
+        link = resolve_link(store, cache, short_code)
+        if link is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return RedirectResponse(url=link.long_url, status_code=302)
+
     @app.get("/health", response_model=HealthOut)
     def health() -> HealthOut:
         store.ping()
         return HealthOut(status="ok")
+
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.is_dir():
+        index = static_dir / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        def demo_ui() -> FileResponse:
+            return FileResponse(index)
+
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.post(
         "/api/v1/data/shorten",
@@ -105,34 +135,21 @@ def create_app(
         "/api/v1/short/{shortCode}",
         status_code=status.HTTP_302_FOUND,
         response_class=RedirectResponse,
-        responses={
-            302: {
-                "description": "Found. Location is the original long URL.",
-                "headers": {
-                    "Location": {
-                        "description": "Original long URL",
-                        "schema": {"type": "string", "format": "uri"},
-                    }
-                },
-            },
-            404: {"description": "Invalid short URL. Code is not in the database."},
-        },
+        responses=_REDIRECT_RESPONSES,
     )
     def redirect(shortCode: str) -> RedirectResponse:
-        link = resolve_link(store, cache, shortCode)
-        if link is None:
+        return _redirect(shortCode)
+
+    @app.get(
+        "/{code}",
+        status_code=status.HTTP_302_FOUND,
+        response_class=RedirectResponse,
+        responses=_REDIRECT_RESPONSES,
+    )
+    def redirect_root(code: str) -> RedirectResponse:
+        if is_reserved_code(code):
             raise HTTPException(status_code=404, detail="not found")
-        return RedirectResponse(url=link.long_url, status_code=302)
-
-    static_dir = Path(__file__).resolve().parent.parent / "static"
-    if static_dir.is_dir():
-        index = static_dir / "index.html"
-
-        @app.get("/", include_in_schema=False)
-        def demo_ui() -> FileResponse:
-            return FileResponse(index)
-
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        return _redirect(code)
 
     return app
 
