@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -48,6 +49,11 @@ def create_app(
     settings: Settings | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(levelname)s %(name)s %(message)s",
+        force=True,
+    )
     store = store if store is not None else build_store(settings)
     cache = cache if cache is not None else build_cache(settings)
     limiter = limiter if limiter is not None else build_limiter(settings)

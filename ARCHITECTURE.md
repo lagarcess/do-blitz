@@ -140,7 +140,7 @@ Auto codes use `[0-9a-zA-Z]` only. Generation starts at length 6 and grows on co
 
 `RedirectCache` maps `code` to `long_url` (or none). Production uses `RedisRedirectCache` when `REDIS_URL` is set. Otherwise the process uses `MemoryRedirectCache` (per instance, good enough for tests). This repo does not provision DigitalOcean Managed Redis.
 
-`RateLimiter` counts `POST /api/v1/data/shorten` per client IP in a 60-second fixed window. Production uses `RedisRateLimiter` when `REDIS_URL` is set so every app instance shares the same counters. Otherwise the process uses `MemoryRateLimiter` (per instance). The client IP is the first `X-Forwarded-For` hop when that header is present, else `request.client.host`. `RATE_LIMIT_SHORTEN_PER_MIN` defaults to 60. `0` disables the limit. Redirect is not rate-limited.
+`RateLimiter` counts `POST /api/v1/data/shorten` per client IP in a 60-second fixed window. Production uses `RedisRateLimiter` when `REDIS_URL` is set so every app instance shares the same counters. Otherwise the process uses `MemoryRateLimiter` (per instance). The client IP is the first `X-Forwarded-For` hop when that header is present, else `request.client.host`. That hop is spoofable unless the App Platform / load balancer sanitizes `X-Forwarded-For` (trusted proxy). `RATE_LIMIT_SHORTEN_PER_MIN` defaults to 60. `0` disables the limit. Redirect is not rate-limited.
 
 ## Scale (BOTE, not encoded in code)
 
@@ -202,7 +202,7 @@ The [App Platform SLA](https://www.digitalocean.com/sla/app-platform) commits to
 
 ### Consistency
 
-Create is strongly consistent. The unique primary key on `code` is the source of truth. Codes are immutable, so `long_url` does not change after insert. The first redirect after create can miss the cache and read Postgres. That is a brief cold cache, not a stale `long_url`. `hit_count` and `last_accessed_at` are best-effort under concurrency. Each successful redirect runs one `UPDATE … SET hit_count = hit_count + 1, last_accessed_at = <now>`. The count and stamp can drift if that write fails after the 302, or if the 302 never runs the increment.
+Create is strongly consistent. The unique primary key on `code` is the source of truth. Codes are immutable, so `long_url` does not change after insert. The first redirect after create can miss the cache and read Postgres. That is a brief cold cache, not a stale `long_url`. Redirect increments `hit_count` / `last_accessed_at` **before** returning the 302; if that write fails, the handler errors (no `Location` / no silent 302). Concurrent redirects can still interleave on the counter itself (atomic SQL `hit_count = hit_count + 1`).
 
 ### Reliability
 

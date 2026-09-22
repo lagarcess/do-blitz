@@ -16,7 +16,7 @@ Human-readable API docs: **`/redoc`** (primary). Swagger UI / try-it-out: `/docs
 
 Metadata fields: `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`.
 
-Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is base62 `[0-9a-zA-Z]`, length 3–32, not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`). Bad input → `422`. Taken alias → `409`. Unknown code → `404`. Shorten rate limit exceeded → `429`.
+Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is base62 `[0-9a-zA-Z]`, length 3–32, not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`). Bad input → `422`. Taken alias → `409`. Unknown code → `404`. Shorten rate limit exceeded → `429`. Rate limit identity is the first `X-Forwarded-For` hop (else the direct client); spoofable unless App Platform / the LB sanitizes that header.
 
 ## Environment
 
@@ -26,8 +26,10 @@ Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is bas
 | `REDIS_URL` | no | Shared redirect cache + shorten rate limiter. Unset → process-local memory. |
 | `RATE_LIMIT_SHORTEN_PER_MIN` | no | Per-IP cap on `POST /api/v1/data/shorten` per 60s window (default `60`; `0` disables). |
 | `PUBLIC_BASE_URL` | no | Prefix for `shortURL` (defaults to the request base URL). |
-| `PORT` | no | Operator listen port (default `8000`). |
-| `LOG_LEVEL` | no | Default `info`. |
+| `PORT` | no | Listen port (default `8000`). Honored by the Dockerfile `CMD` (`${PORT:-8000}`). App Platform should set the component HTTP port to match (commonly `8000`). |
+| `LOG_LEVEL` | no | Process log level (default `info`). Applied via `logging.basicConfig` at app startup. |
+| `TEST_DATABASE_URL` | pytest only | Postgres URL pytest may wipe. Prefer this over `DATABASE_URL` for local/CI tests. |
+| `ALLOW_TEST_DB_WIPE` | pytest only | Set to `1` only with a dedicated test DB name (`_test`) if you must reuse `DATABASE_URL` for pytest. Never enable against App Platform prod. |
 
 ## Local run (OrbStack)
 
@@ -48,7 +50,8 @@ curl -s localhost:8000/health
 curl -s -X POST localhost:8000/api/v1/data/shorten \
   -H 'content-type: application/json' \
   -d '{"longURL":"https://example.com/page","alias":"promo1"}'
-curl -sI localhost:8000/api/v1/short/promo1
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' localhost:8000/api/v1/short/promo1
+# expect: 302 https://example.com/page
 open http://localhost:8000/
 ```
 
@@ -56,10 +59,15 @@ open http://localhost:8000/
 
 ```bash
 python3 -m pip install -r requirements.txt
+# memory store (default — safe; does not wipe any DATABASE_URL)
+python3 -m pytest -q
+
+# Postgres integration (OrbStack). Use a dedicated test database only:
+export TEST_DATABASE_URL=postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz_test
 python3 -m pytest -q
 ```
 
-Without `DATABASE_URL`, API tests inject an in-memory store via fixtures. CI starts Postgres and sets `DATABASE_URL` so the same suite exercises `PostgresLinkStore`.
+Pytest wipes only `TEST_DATABASE_URL`, or `DATABASE_URL` when `ALLOW_TEST_DB_WIPE=1` and the URL looks like a test DB (`_test`). Never point pytest at the App Platform production database. CI sets `TEST_DATABASE_URL` against an ephemeral Postgres service.
 
 ## Deploy shape (DigitalOcean)
 

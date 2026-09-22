@@ -12,11 +12,16 @@ MAX_URL_LEN = 2048
 
 
 def _http_https_url(value: str) -> str:
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("url contains control characters")
     if len(value) > MAX_URL_LEN:
         raise ValueError(f"url must be at most {MAX_URL_LEN} characters")
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"}:
         raise ValueError("url must be an http or https URL")
+    host = parsed.hostname
+    if not host or host == "." or ".." in host:
+        raise ValueError("url must include a usable hostname")
     return value
 
 

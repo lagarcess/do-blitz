@@ -70,6 +70,17 @@ def test_bad_url_422(client) -> None:
     assert client.post("/api/v1/data/shorten", json={}).status_code == 422
     too_long = "https://example.com/" + ("a" * MAX_URL_LEN)
     assert client.post("/api/v1/data/shorten", json={"longURL": too_long}).status_code == 422
+    for bad in (
+        "https://@",
+        "https://user@/",
+        "https://",
+        "https://.",
+        "http://" + chr(0) + "evil.example",
+        "https://example.com/" + chr(0x1F) + "path",
+    ):
+        response = client.post("/api/v1/data/shorten", json={"longURL": bad})
+        assert response.status_code == 422, bad
+
 
 
 def test_openapi_documents_redirect_302(client) -> None:
