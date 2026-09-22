@@ -88,3 +88,12 @@ Create is not naturally idempotent. A client that retries after a lost 201 can i
 ## Out of scope
 
 DigitalOcean tokens, App Platform / Managed Postgres provisioning, update/delete, auth, custom aliases.
+
+## Decision trades
+
+- Codes: random base62 mint + DB unique constraint (not hash of URL) → no hash-collision rings; rare insert races retry/lengthen 6→12.
+- Redirect: 302 not 301 → safer for hit counting / cache; can flip to 301 later.
+- Immutable links: no update/delete → simpler model; no correction path.
+- Store: Postgres when `DATABASE_URL` set, memory otherwise → local/CI velocity vs durable prod.
+- Redirect path under `/api/v1/short/{code}` → matches locked API; full `shortURL` longer than root `/{code}`.
+- Scale BOTE in docs only → design target; not pre-provisioned capacity.
