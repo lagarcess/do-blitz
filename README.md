@@ -16,7 +16,7 @@ Live App Platform:
 | Health | https://do-blitz-9tovc.ondigitalocean.app/health |
 | Repo | https://github.com/lagarcess/do-blitz |
 
-Walkthrough: open the UI → paste a `longURL` (optional alias) → copy `shortURL` → open it (**302**) → `GET /api/v1/data/{code}` shows `hits` / `last_accessed_at`. Or curl (GET, not HEAD) that prints **302** + redirect URL:
+Walkthrough: open the UI → paste a `longURL` (optional alias) → copy `shortURL` (`/{code}`) → open it (**302**) → `GET /api/v1/data/{code}` shows `hits` / `last_accessed_at`. Or curl (GET, not HEAD) that prints **302** + redirect URL:
 
 ```bash
 curl -sS -X POST https://do-blitz-9tovc.ondigitalocean.app/api/v1/data/shorten \
@@ -24,8 +24,9 @@ curl -sS -X POST https://do-blitz-9tovc.ondigitalocean.app/api/v1/data/shorten \
   -d '{"longURL":"https://example.com/page"}'
 # then, with the returned code:
 curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' \
-  https://do-blitz-9tovc.ondigitalocean.app/api/v1/short/<code>
+  https://do-blitz-9tovc.ondigitalocean.app/<code>
 # expect: 302 https://example.com/page
+# GET /api/v1/short/<code> still 302s the same way
 ```
 
 Local OrbStack steps stay under **Local run (OrbStack)** below.
@@ -45,7 +46,7 @@ flowchart TD
     CApp -->|alias taken| C409[409]
   end
 
-  subgraph Redirect["Redirect GET /api/v1/short/{code}"]
+  subgraph Redirect["Redirect GET /{code} (compat GET /api/v1/short/{code})"]
     R1[Client] --> RLB[Load balancer] --> RApp[App]
     RApp --> RCache[(Cache Redis when configured)]
     RCache -->|hit or after DB hit| RUpd[Postgres UPDATE hits + last_accessed_at]
@@ -61,7 +62,8 @@ Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment)
 ### High-level design
 
 - **Shape:** load balancer → app → Postgres; cache (Redis/Valkey when `REDIS_URL`, else process-local) on redirect only; rate limit on create.
-- **API:** `POST /api/v1/data/shorten`, `GET /api/v1/data/{code}`, `GET /api/v1/short/{code}` **302**, `GET /health`, thin UI at `/`.
+- **API:** `POST /api/v1/data/shorten`, `GET /api/v1/data/{code}`, `GET /{code}` **302** (compat `GET /api/v1/short/{code}`), `GET /health`, thin UI at `/`.
+- **Data model:** Postgres `links` stores `code`, `long_url`, `created_at`, `hit_count`, `last_accessed_at`. It does **not** store `shortURL`. `_short_url` in `do_blitz/app.py` composes `shortURL` at response time as `{PUBLIC_BASE_URL or request base}/{code}`, so a domain or path change does not rewrite rows.
 - **Extras shipped:** optional `alias` (taken → **409**), `last_accessed_at`, per-IP create rate limit (**429**), Demo UI, ReDoc primary (`/redoc`).
 - **Decisions / tradeoffs:**
   - Random base62 codes (not a hash of the long URL).
@@ -69,7 +71,7 @@ Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment)
   - Immutable links — no update/delete.
   - Same `longURL` may mint a new code on each create.
   - Short code vs long starter hostname — no custom domain on this deploy.
-  - Public path `/api/v1/short/{code}`, not root `/{code}`.
+  - Public short URL is `/{code}`; reserved first-path tokens (`health`, `docs`, `redoc`, `openapi.json`, `api`, `static`, plus `short`, `data`, `v1`) are not codes.
   - `/health` = process + Postgres ping (Redis not in health).
   - App tier **1× `basic-xxs`** (platform HA needs a larger slug ×2 — cost choice); Postgres standby for data durability.
   - Fail-fast without `DATABASE_URL` (no silent in-memory store in prod).
@@ -82,13 +84,14 @@ Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment)
 | --- | --- | --- |
 | `POST` | `/api/v1/data/shorten` | `201` metadata. Body `{"longURL":"<url>","alias":"<optional>"}`. |
 | `GET` | `/api/v1/data/{code}` | `200` metadata JSON (no redirect). |
-| `GET` | `/api/v1/short/{code}` | **302 Found** to the long URL; increments `hit_count` and sets `last_accessed_at`. |
+| `GET` | `/{code}` | **302 Found** to the long URL; increments `hit_count` and sets `last_accessed_at`. |
+| `GET` | `/api/v1/short/{code}` | Same **302** as `/{code}` (compat). |
 | `GET` | `/health` | `200` after a store ping. |
 | `GET` | `/` | Demo UI (static). |
 
-Metadata fields: `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`.
+Metadata fields: `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`. `shortURL` is composed at runtime (`{PUBLIC_BASE_URL or request base}/{code}`), not read from Postgres.
 
-Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is base62 `[0-9a-zA-Z]`, length 3–32, not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`). Bad input → `422`. Taken alias → `409`. Unknown code → `404`. Shorten rate limit exceeded → `429`. Rate limit identity is the first `X-Forwarded-For` hop (else the direct client); spoofable unless App Platform / the LB sanitizes that header.
+Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is base62 `[0-9a-zA-Z]`, length 3–32, not reserved (`api`, `health`, `docs`, `redoc`, `static`, `short`, `data`, `v1`). Bad input → `422`. Taken alias → `409`. Unknown code → `404`. Shorten rate limit exceeded → `429`. Rate limit identity is the first `X-Forwarded-For` hop (else the direct client); spoofable unless App Platform / the LB sanitizes that header.
 
 ## Environment
 
@@ -97,7 +100,7 @@ Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is bas
 | `DATABASE_URL` | **yes** for the running service | Postgres URL (`postgres://`, `postgresql://`, or `postgresql+psycopg://`). The process fails fast without it (no silent in-memory store in production). |
 | `REDIS_URL` | no | Shared redirect cache + shorten rate limiter. Unset → process-local memory. |
 | `RATE_LIMIT_SHORTEN_PER_MIN` | no | Per-IP cap on `POST /api/v1/data/shorten` per 60s window (default `60`; `0` disables). |
-| `PUBLIC_BASE_URL` | no | Prefix for `shortURL` (defaults to the request base URL). |
+| `PUBLIC_BASE_URL` | no | Prefix for `shortURL` (`{base}/{code}`; defaults to the request base URL). |
 | `PORT` | no | Listen port (default `8000`). Honored by the Dockerfile `CMD` (`${PORT:-8000}`). App Platform should set the component HTTP port to match (commonly `8000`). |
 | `LOG_LEVEL` | no | Process log level (default `info`). Applied via `logging.basicConfig` at app startup. |
 | `TEST_DATABASE_URL` | pytest only | Postgres URL pytest may wipe. Prefer this over `DATABASE_URL` for local/CI tests. |
@@ -115,14 +118,14 @@ python3 -m pip install -r requirements.txt
 python3 -m uvicorn do_blitz.app:app --host 0.0.0.0 --port 8000
 ```
 
-Tables are created on startup (`links`: `code`, `long_url`, `created_at`, `hit_count`, `last_accessed_at`).
+Tables are created on startup (`links`: `code`, `long_url`, `created_at`, `hit_count`, `last_accessed_at`). There is no `shortURL` column. The API builds that field in `_short_url` from the public base and `code`.
 
 ```bash
 curl -s localhost:8000/health
 curl -s -X POST localhost:8000/api/v1/data/shorten \
   -H 'content-type: application/json' \
   -d '{"longURL":"https://example.com/page","alias":"promo1"}'
-curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' localhost:8000/api/v1/short/promo1
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' localhost:8000/promo1
 # expect: 302 https://example.com/page
 open http://localhost:8000/
 ```

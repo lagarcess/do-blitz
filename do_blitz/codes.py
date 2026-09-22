@@ -9,7 +9,19 @@ ALIAS_MAX_LEN = 32
 INITIAL_CODE_LENGTH = 6
 MAX_CODE_LENGTH = 12
 ATTEMPTS_PER_LENGTH = 8
-RESERVED_CODES = frozenset({"api", "health", "docs", "short", "data", "v1"})
+RESERVED_CODES = frozenset(
+    {
+        "api",
+        "health",
+        "docs",
+        "redoc",
+        "openapi.json",
+        "static",
+        "short",
+        "data",
+        "v1",
+    }
+)
 
 
 def is_reserved_code(code: str) -> bool:
