@@ -150,6 +150,17 @@ Target: **App Platform** (stateless app containers) + **Managed Postgres** (+ op
 
 App-tier HA needs ≥2 instances, but `basic-xxs`/`basic-xs` are capped at one instance — see the App Platform size vs HA note in [`ARCHITECTURE.md`](./ARCHITECTURE.md). This deploy stayed 1× `basic-xxs` for cost; Postgres standby covers data-plane durability. Capacity BOTE and other decision trades live in the same doc.
 
+
+## Observability
+
+App Platform covers day-one ops visibility without a separate APM product:
+
+- **Runtime Logs** — stdout/stderr from the app (control panel → app → **Runtime Logs**, or `doctl apps logs <app-id>`). Use this for request errors and startup failures.
+- **Insights** — CPU, memory, restart count, request rate, and latency for the service component (control panel → app → **Insights**).
+- **Log forwarding** (optional) — App Platform can forward runtime logs to an external provider when you need longer retention or search.
+
+`GET /health` checks that the process is up and Postgres answers a ping. It is not a substitute for logs or Insights.
+
 ## Out of scope here
 
 Provisioning DigitalOcean resources, Managed Redis, auth, update/delete of links, and click-history analytics beyond `hits` + `last_accessed_at`.
