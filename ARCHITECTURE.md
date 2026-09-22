@@ -2,7 +2,8 @@
 
 ## Package map
 
-- `do_blitz/app.py` — FastAPI factory: health, shorten, metadata, redirect
+- `do_blitz/app.py` — FastAPI factory: health, shorten, metadata, redirect, `GET /` demo UI
+- `static/index.html` — thin single-page shorten form (longURL + optional alias → shortURL + copy)
 - `do_blitz/config.py` — `PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `PUBLIC_BASE_URL`, `RATE_LIMIT_SHORTEN_PER_MIN`
 - `do_blitz/models.py` — Pydantic v2 request and metadata payloads (`longURL` / `shortURL`)
 - `do_blitz/codes.py` — base62 alphabet and short-then-longer generators
@@ -102,6 +103,7 @@ At much higher write QPS, a distributed unique ID generator (Snowflake-style or 
 | GET | `/api/v1/data/{shortCode}` | 200 metadata JSON. No redirect. Unknown code is 404. |
 | GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`) and sets `last_accessed_at`. |
 | GET | `/health` | 200 `{"status":"ok"}`. |
+| GET | `/` | Demo UI (static). |
 
 Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`. `last_accessed_at` answers "when was this link last clicked?". `hits` still answers how many times.
 
@@ -121,7 +123,7 @@ API JSON still names the counter `hits` (maps from `hit_count`).
 
 `shortURL` is `{PUBLIC_BASE_URL or request base}/api/v1/short/{code}`.
 
-Validation at the HTTP boundary (Pydantic, OpenAPI at `/docs`):
+Validation at the HTTP boundary (Pydantic, OpenAPI at `/docs` and ReDoc at `/redoc`):
 
 - `longURL` must be `http` or `https`, max 2048 characters
 - `alias` is optional. When present it must be base62 `[0-9a-zA-Z]`, length 3-32, and must not be a reserved name (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive)
@@ -134,9 +136,7 @@ Auto codes use `[0-9a-zA-Z]` only. Generation starts at length 6 and grows on co
 
 ## Storage
 
-`LinkStore` is the persistence interface. Production uses `PostgresLinkStore` when `DATABASE_URL` is set (SQLAlchemy 2.x + psycopg). `code` is the primary key (unique).
-
-Without `DATABASE_URL` the process uses `MemoryLinkStore` so health and local API tests can run offline. CI sets `DATABASE_URL` and runs against Postgres.
+`LinkStore` is the persistence interface. The running service requires `DATABASE_URL` and uses `PostgresLinkStore` (SQLAlchemy 2.x + psycopg). `code` is the primary key (unique). `build_store` fails fast without `DATABASE_URL` unless `allow_memory=True` (pytest fixtures only). CI sets `DATABASE_URL` and exercises Postgres.
 
 `RedirectCache` maps `code` to `long_url` (or none). Production uses `RedisRedirectCache` when `REDIS_URL` is set. Otherwise the process uses `MemoryRedirectCache` (per instance, good enough for tests). This repo does not provision DigitalOcean Managed Redis.
 
@@ -176,7 +176,7 @@ Postgres is the store because the unique constraint on `code` is the concurrency
 
 ## HA, uniqueness, idempotency
 
-Target deploy (not provisioned here): App Platform, multiple app instances, Managed Postgres. Redis is optional (`REDIS_URL`) and is not provisioned here.
+Target deploy: App Platform, multiple app instances, Managed Postgres. Redis/Valkey is optional (`REDIS_URL`). This repo does not create DigitalOcean resources; an interview deploy may provision App Platform + Postgres + Valkey outside this repo.
 
 Concurrency control is the unique constraint on `code`. Two instances that roll the same random code: one insert wins, the other retries with a new code.
 
@@ -208,7 +208,7 @@ DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisionin
 - IDs stay random base62 (no Snowflake or range-counter generator) → enough uniqueness at current write QPS; a distributed ID encoded as base62 is the scale alternative when collision retries become the bottleneck.
 - Redirect: 302 not 301 → safer for hit counting / cache; can flip to 301 later.
 - Immutable links: no update/delete → simpler model; no correction path.
-- Store: Postgres when `DATABASE_URL` set, memory otherwise → local/CI velocity vs durable prod.
+- Store: `DATABASE_URL` required at runtime (Postgres); `MemoryLinkStore` only via `allow_memory=True` in tests → no silent in-memory prod.
 - Redirect path under `/api/v1/short/{code}` → matches locked API; full `shortURL` longer than root `/{code}`.
 - Scale BOTE in docs only → design target; not pre-provisioned capacity.
 - Cache: Redis when `REDIS_URL` is set, process-local memory otherwise → no DigitalOcean Managed Redis; CI and tests stay offline.
