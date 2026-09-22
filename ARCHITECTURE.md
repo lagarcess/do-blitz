@@ -170,7 +170,7 @@ DigitalOcean App Platform `basic-xxs` / `basic-xs` allow **max `instance_count=1
 
 **Prod HA path:** move the app component to a size that allows ≥2 instances so the platform LB can fail over (matches DO App Platform HA guidance).
 
-**This interview session:** stay **1× `basic-xxs`** for cost after briefly trying 2× `professional-xs`. Accept a single-instance app tier. Managed Postgres keeps multi-node standby for data-plane durability; Valkey remains the shared cache and rate-limit plane.
+**This deploy:** stay **1× `basic-xxs`** for cost after briefly trying 2× `professional-xs`. Accept a single-instance app tier. Managed Postgres keeps multi-node standby for data-plane durability; Valkey remains the shared cache and rate-limit plane.
 
 **Why:** app-tier HA costs more than this account needed for the dress rehearsal; durability for stored links already sits on Managed Postgres standby.
 
@@ -186,7 +186,7 @@ Postgres is the store because the unique constraint on `code` is the concurrency
 
 ## HA, uniqueness, idempotency
 
-Target deploy: App Platform, multiple app instances, Managed Postgres. Redis/Valkey is optional (`REDIS_URL`). This repo does not create DigitalOcean resources; an interview deploy may provision App Platform + Postgres + Valkey outside this repo.
+Target deploy: App Platform, multiple app instances, Managed Postgres. Redis/Valkey is optional (`REDIS_URL`). This repo does not create DigitalOcean resources; App Platform + Postgres + Valkey are provisioned outside this repo when deploying.
 
 Concurrency control is the unique constraint on `code`. Two instances that roll the same random code: one insert wins, the other retries with a new code.
 
