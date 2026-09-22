@@ -2,17 +2,43 @@
 
 ## Package map
 
-- `do_blitz/app.py` — FastAPI factory: health, shorten, metadata, redirect, `GET /` demo UI
-- `static/index.html` — thin single-page shorten form (longURL + optional alias → shortURL + copy)
-- `do_blitz/config.py` — `PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `PUBLIC_BASE_URL`, `RATE_LIMIT_SHORTEN_PER_MIN`
-- `do_blitz/models.py` — Pydantic v2 request and metadata payloads (`longURL` / `shortURL`)
-- `do_blitz/codes.py` — base62 alphabet and short-then-longer generators
-- `do_blitz/service.py` — create / lookup / resolve (`hit_count` increment)
-- `do_blitz/store.py` — `LinkStore` protocol, `MemoryLinkStore`, `PostgresLinkStore`
-- `do_blitz/cache.py` — `RedirectCache` protocol, `MemoryRedirectCache`, `RedisRedirectCache`
-- `do_blitz/rate_limit.py` — `RateLimiter` protocol, `MemoryRateLimiter`, `RedisRateLimiter`
+### Runtime
 
-There are no PUT, PATCH, or DELETE routes. Codes are immutable after insert. Create may supply an optional `alias`.
+| Concern | File | Look here for |
+| --- | --- | --- |
+| HTTP routes, status codes, XFF, wiring | `do_blitz/app.py` | `create_app`, `/health`, `/`, shorten, metadata, redirect |
+| Request/response shapes + URL/alias validation | `do_blitz/models.py` | `ShortenIn`, `LinkOut`, `_http_https_url`, `_optional_alias` |
+| Env/settings | `do_blitz/config.py` | `Settings`, `load_settings`, `sqlalchemy_url` |
+| Create / get / resolve (hits + last_accessed) | `do_blitz/service.py` | `create_link`, `get_link`, `resolve_link` |
+| Persistence | `do_blitz/store.py` | `Link`, `LinkStore`, `MemoryLinkStore`, `PostgresLinkStore`, `build_store` |
+| Redirect cache | `do_blitz/cache.py` | `RedirectCache`, Redis vs memory, `build_cache` |
+| Shorten rate limit | `do_blitz/rate_limit.py` | `RateLimiter`, Redis vs memory, `build_limiter` |
+| base62 codes + reserved names | `do_blitz/codes.py` | `generate_code`, `iter_candidate_codes`, `is_reserved_code` |
+| Demo UI | `static/index.html` | form → POST shorten |
+
+### Tests (by topic)
+
+| Topic | File |
+| --- | --- |
+| health | `tests/test_health.py` |
+| links / alias / redirect / validation | `tests/test_links.py` |
+| codes / DB URL normalize | `tests/test_codes.py` |
+| cache | `tests/test_cache.py` |
+| rate limit | `tests/test_rate_limit.py` |
+| fail-fast store | `tests/test_config_store.py` |
+| wipe safety | `tests/test_db_wipe_safety.py` |
+| UI `/` | `tests/test_ui.py` |
+| fixtures (incl. wipe guards) | `tests/conftest.py` |
+
+### Ship
+
+| Artifact | Role |
+| --- | --- |
+| `Dockerfile` | App Platform image; `CMD` honors `${PORT:-8000}` |
+| `requirements.txt` | runtime deps |
+| `.github/workflows/ci.yml` | pytest + Postgres service |
+
+No PUT, PATCH, or DELETE routes. Codes are immutable after insert (optional `alias` on create only).
 
 ## Diagram
 

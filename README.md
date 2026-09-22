@@ -56,7 +56,7 @@ flowchart TD
   end
 ```
 
-Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment). Sequence detail, rate-limit / 409 / 404 branches: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment). Sequence detail, rate-limit / 409 / 404 branches: [`ARCHITECTURE.md`](./ARCHITECTURE.md). Module map: see **Package map** in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## API
 
