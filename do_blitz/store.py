@@ -149,7 +149,12 @@ class PostgresLinkStore:
             session.commit()
 
 
-def build_store(settings: Settings) -> LinkStore:
+def build_store(settings: Settings, *, allow_memory: bool = False) -> LinkStore:
     if settings.database_url:
         return PostgresLinkStore(settings.database_url)
-    return MemoryLinkStore()
+    if allow_memory:
+        return MemoryLinkStore()
+    raise RuntimeError(
+        "DATABASE_URL is required for durable storage. "
+        "Set DATABASE_URL to a Postgres URL, or pass allow_memory=True only in tests."
+    )

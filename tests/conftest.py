@@ -11,7 +11,8 @@ from do_blitz.store import PostgresLinkStore, build_store
 
 @pytest.fixture
 def store():
-    built = build_store(load_settings())
+    settings = load_settings()
+    built = build_store(settings, allow_memory=True)
     if isinstance(built, PostgresLinkStore):
         built.wipe()
     yield built

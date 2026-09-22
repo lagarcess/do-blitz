@@ -1,94 +1,72 @@
 # do-blitz
 
-FastAPI URL shortener. Shorten a long URL, 302 to it, read metadata. No update or delete.
+Production-shaped FastAPI URL shortener for a time-boxed interview build. Mint a short code (random base62 or optional alias), 302 to the long URL, read metadata. Links are immutable after create — no update or delete.
+
+OpenAPI lives at `/docs`. A minimal shorten UI is served at `/`.
+
+## API
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `POST` | `/api/v1/data/shorten` | `201` metadata. Body `{"longURL":"<url>","alias":"<optional>"}`. |
+| `GET` | `/api/v1/data/{code}` | `200` metadata JSON (no redirect). |
+| `GET` | `/api/v1/short/{code}` | **302 Found** to the long URL; increments `hit_count` and sets `last_accessed_at`. |
+| `GET` | `/health` | `200` after a store ping. |
+| `GET` | `/` | Demo UI (static). |
+
+Metadata fields: `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`.
+
+Validation: `longURL` must be `http`/`https` (max 2048). Optional `alias` is base62 `[0-9a-zA-Z]`, length 3–32, not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`). Bad input → `422`. Taken alias → `409`. Unknown code → `404`. Shorten rate limit exceeded → `429`.
 
 ## Environment
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | production / CI | Postgres URL. `postgres://`, `postgresql://`, or `postgresql+psycopg://`. |
-| `REDIS_URL` | no | Redis URL for the redirect cache and the shared shorten rate limiter (`redis://host:6379/0`). Unset uses process-local memory for both. This repo does not provision DigitalOcean Managed Redis. |
-| `RATE_LIMIT_SHORTEN_PER_MIN` | no | Max `POST /api/v1/data/shorten` requests per client IP per 60-second window (default `60`). `0` disables the limit. |
-| `PUBLIC_BASE_URL` | no | Prefix for `shortURL`. Defaults to the incoming request base (`http://testserver` in tests). |
-| `PORT` | no | Listen port (default `8000`). Used by operators; uvicorn still needs `--port`. |
+| `DATABASE_URL` | **yes** for the running service | Postgres URL (`postgres://`, `postgresql://`, or `postgresql+psycopg://`). The process fails fast without it (no silent in-memory store in production). |
+| `REDIS_URL` | no | Shared redirect cache + shorten rate limiter. Unset → process-local memory. |
+| `RATE_LIMIT_SHORTEN_PER_MIN` | no | Per-IP cap on `POST /api/v1/data/shorten` per 60s window (default `60`; `0` disables). |
+| `PUBLIC_BASE_URL` | no | Prefix for `shortURL` (defaults to the request base URL). |
+| `PORT` | no | Operator listen port (default `8000`). |
 | `LOG_LEVEL` | no | Default `info`. |
 
-Without `DATABASE_URL` the app keeps links in memory (lost on restart). Use Postgres for anything you want to keep.
+## Local run (OrbStack)
 
-## Local Postgres (OrbStack or Docker)
+Team local path is **OrbStack**, not Docker Desktop. Create Postgres (and optional Redis/Valkey) in OrbStack, then:
 
 ```bash
-docker run --name do-blitz-pg \
-  -e POSTGRES_USER=do_blitz \
-  -e POSTGRES_PASSWORD=do_blitz \
-  -e POSTGRES_DB=do_blitz \
-  -p 5432:5432 \
-  postgres:16
-
 export DATABASE_URL=postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz
-```
+# optional: export REDIS_URL=redis://localhost:6379/0
 
-Tables are created on startup (`links`, unique `code`).
-
-## Setup and run
-
-```bash
 python3 -m pip install -r requirements.txt
 python3 -m uvicorn do_blitz.app:app --host 0.0.0.0 --port 8000
 ```
 
-OpenAPI: `http://localhost:8000/docs`.
-
-## API
+Tables are created on startup (`links`: `code`, `long_url`, `created_at`, `hit_count`, `last_accessed_at`).
 
 ```bash
 curl -s localhost:8000/health
-# {"status":"ok"}
-
 curl -s -X POST localhost:8000/api/v1/data/shorten \
   -H 'content-type: application/json' \
   -d '{"longURL":"https://example.com/page","alias":"promo1"}'
-# 201 {"code":"promo1","shortURL":"http://127.0.0.1:8000/api/v1/short/promo1","longURL":"https://example.com/page","created_at":"…","hits":0,"last_accessed_at":null}
-
 curl -sI localhost:8000/api/v1/short/promo1
-# 302 Found
-# Location: https://example.com/page
-
-curl -s localhost:8000/api/v1/data/promo1
-# {"code":"promo1","shortURL":"http://127.0.0.1:8000/api/v1/short/promo1","longURL":"https://example.com/page","created_at":"…","hits":1,"last_accessed_at":"…"}
+open http://localhost:8000/
 ```
-
-Validation:
-
-- `longURL` must be `http` or `https` and at most 2048 characters (else 422)
-- Optional `alias` must be base62 `[0-9a-zA-Z]`, 3-32 characters, and not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive). Bad alias → 422. Taken alias → 409.
-- Unknown code → 404
-- More than `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) shorten requests from one client IP in 60 seconds → 429. The first `X-Forwarded-For` hop is the client IP when that header is set.
-
-Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert collides. `last_accessed_at` is when the link was last clicked (null until the first redirect). `hits` is how many times.
 
 ## Tests
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 -m pytest -q
 ```
 
-With `DATABASE_URL` unset, API tests use the in-memory store. CI starts a Postgres service and sets `DATABASE_URL` so the same tests run against `PostgresLinkStore`. Redirect-cache and rate-limit tests use the process-local memory backends. Redis is optional and is not started in CI.
+Without `DATABASE_URL`, API tests inject an in-memory store via fixtures. CI starts Postgres and sets `DATABASE_URL` so the same suite exercises `PostgresLinkStore`.
 
-```bash
-export DATABASE_URL=postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz
-python3 -m pytest -q
-```
+## Deploy shape (DigitalOcean)
 
-## Docker
+Target: **App Platform** (stateless app containers) + **Managed Postgres**. Set `DATABASE_URL` (and optionally `REDIS_URL`, `PUBLIC_BASE_URL`, rate-limit env) on the app. The `Dockerfile` in this repo is the **App Platform build artifact** — not the local development story.
 
-Needs a reachable Postgres (`DATABASE_URL`).
+HA notes, capacity BOTE, and decision trades: see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
-```bash
-docker build -t do-blitz .
-docker run --rm -p 8000:8000 -e DATABASE_URL="$DATABASE_URL" do-blitz
-```
+## Out of scope here
 
-## Out of scope
-
-DigitalOcean deploy, DO tokens, and managed-DB provisioning. See `ARCHITECTURE.md` for HA and scale notes.
+Provisioning DigitalOcean resources, Managed Redis, auth, update/delete of links, and click-history analytics beyond `hits` + `last_accessed_at`.

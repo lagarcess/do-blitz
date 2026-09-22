@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from do_blitz.cache import RedirectCache, build_cache
 from do_blitz.config import Settings, load_settings
@@ -115,7 +118,21 @@ def create_app(
             raise HTTPException(status_code=404, detail="not found")
         return RedirectResponse(url=link.long_url, status_code=302)
 
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.is_dir():
+        index = static_dir / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        def demo_ui() -> FileResponse:
+            return FileResponse(index)
+
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
     return app
 
 
-app = create_app()
+
+def __getattr__(name: str):
+    if name == "app":
+        return create_app()
+    raise AttributeError(name)
