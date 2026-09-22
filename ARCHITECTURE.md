@@ -123,7 +123,7 @@ API JSON still names the counter `hits` (maps from `hit_count`).
 
 `shortURL` is `{PUBLIC_BASE_URL or request base}/api/v1/short/{code}`.
 
-Validation at the HTTP boundary (Pydantic, OpenAPI at `/docs` and ReDoc at `/redoc`):
+Validation at the HTTP boundary (Pydantic). Humans should use **ReDoc at `/redoc`** (primary); Swagger UI at `/docs` is secondary for try-it-out:
 
 - `longURL` must be `http` or `https`, max 2048 characters
 - `alias` is optional. When present it must be base62 `[0-9a-zA-Z]`, length 3-32, and must not be a reserved name (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive)

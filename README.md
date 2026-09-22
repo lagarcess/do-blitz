@@ -2,7 +2,7 @@
 
 Production-shaped FastAPI URL shortener for a time-boxed interview build. Mint a short code (random base62 or optional alias), 302 to the long URL, read metadata. Links are immutable after create — no update or delete.
 
-OpenAPI lives at `/docs`. A minimal shorten UI is served at `/`.
+Human-readable API docs: **`/redoc`** (primary). Swagger UI / try-it-out: `/docs` (secondary). Minimal shorten UI: `/`.
 
 ## API
 
