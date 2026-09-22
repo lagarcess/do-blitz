@@ -56,9 +56,25 @@ flowchart TD
   end
 ```
 
-Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment). Sequence detail, rate-limit / 409 / 404 branches: [`ARCHITECTURE.md`](./ARCHITECTURE.md). Module map: see **Package map** in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment).
 
-More in [`ARCHITECTURE.md`](./ARCHITECTURE.md): [Problem scope](./ARCHITECTURE.md#problem-scope) · [High level design](./ARCHITECTURE.md#high-level-design) · [Deep dive](./ARCHITECTURE.md#deep-dive) · [Wrap up](./ARCHITECTURE.md#wrap-up).
+### High-level design
+
+- **Shape:** load balancer → app → Postgres; cache (Redis/Valkey when `REDIS_URL`, else process-local) on redirect only; rate limit on create.
+- **API:** `POST /api/v1/data/shorten`, `GET /api/v1/data/{code}`, `GET /api/v1/short/{code}` **302**, `GET /health`, thin UI at `/`.
+- **Extras shipped:** optional `alias` (taken → **409**), `last_accessed_at`, per-IP create rate limit (**429**), Demo UI, ReDoc primary (`/redoc`).
+- **Decisions / tradeoffs:**
+  - Random base62 codes (not a hash of the long URL).
+  - **302** not **301** (safer for hit counting / cache).
+  - Immutable links — no update/delete.
+  - Same `longURL` may mint a new code on each create.
+  - Short code vs long starter hostname — no custom domain on this deploy.
+  - Public path `/api/v1/short/{code}`, not root `/{code}`.
+  - `/health` = process + Postgres ping (Redis not in health).
+  - App tier **1× `basic-xxs`** (platform HA needs a larger slug ×2 — cost choice); Postgres standby for data durability.
+  - Fail-fast without `DATABASE_URL` (no silent in-memory store in prod).
+
+[`ARCHITECTURE.md`](./ARCHITECTURE.md): [Package map](./ARCHITECTURE.md#package-map) · [Problem scope](./ARCHITECTURE.md#problem-scope) · [High level design](./ARCHITECTURE.md#high-level-design) · [Deep dive](./ARCHITECTURE.md#deep-dive) · [Decision trades](./ARCHITECTURE.md#decision-trades) · [Wrap up](./ARCHITECTURE.md#wrap-up).
 
 ## API
 
