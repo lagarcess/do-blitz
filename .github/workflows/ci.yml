@@ -8,6 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: do_blitz
+          POSTGRES_PASSWORD: do_blitz
+          POSTGRES_DB: do_blitz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U do_blitz -d do_blitz_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://do_blitz:do_blitz@localhost:5432/do_blitz_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

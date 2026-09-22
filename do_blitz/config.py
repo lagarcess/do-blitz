@@ -9,6 +9,17 @@ class Settings:
     port: int = 8000
     log_level: str = "info"
     database_url: str | None = None
+    public_base_url: str | None = None
+
+
+def sqlalchemy_url(raw: str) -> str:
+    if raw.startswith("postgresql+"):
+        return raw
+    if raw.startswith("postgres://"):
+        return "postgresql+psycopg://" + raw[len("postgres://") :]
+    if raw.startswith("postgresql://"):
+        return "postgresql+psycopg://" + raw[len("postgresql://") :]
+    return raw
 
 
 def load_settings(environ: dict[str, str] | None = None) -> Settings:
@@ -22,4 +33,5 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
         port=port,
         log_level=env.get("LOG_LEVEL", "info"),
         database_url=env.get("DATABASE_URL") or None,
+        public_base_url=env.get("PUBLIC_BASE_URL") or None,
     )

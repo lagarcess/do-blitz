@@ -1,3 +1,3 @@
-"""do-blitz — scaffold only (no shortener logic yet)."""
+"""do-blitz URL shortener."""
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
