@@ -16,84 +16,133 @@ There are no PUT, PATCH, or DELETE routes. Codes are immutable after insert. Cre
 
 ## Diagram
 
-Create and redirect share one load balancer and a pool of app servers. The cache sits only on the redirect path.
+Create and redirect share one load balancer and app instances. Durable rows live in Postgres. Cache (Redis when `REDIS_URL` is set, otherwise process-local memory) sits on the **redirect** path only. Create never writes the cache.
+
+### High level — Create
 
 ```mermaid
-flowchart LR
-    User --> LB[Load balancer]
-    LB --> App[App servers]
-    App -->|create: mint code, INSERT unique code| PG[(Postgres)]
-    App -->|redirect: get code| Cache[(Cache)]
-    Cache -->|hit: long_url| App
-    App -->|miss: SELECT code| PG
-    PG -->|found: fill cache| Cache
-    PG -->|not found: 404| App
-    App -->|302 Location long_url| User
+flowchart TD
+  subgraph Create["POST /api/v1/data/shorten"]
+    U1[Client] --> LB1[Load balancer]
+    LB1 --> App1[App]
+    App1 -->|rate limit deny| R429[429]
+    App1 -->|allow: alias or mint base62| PG1[(Postgres)]
+    PG1 -->|INSERT unique code| App1
+    App1 -->|ok| R201[201 metadata]
+    App1 -->|alias taken| R409[409]
+  end
 ```
+
+Create does **not** touch Cache.
+
+### High level — Redirect
+
+```mermaid
+flowchart TD
+  subgraph Redirect["GET /api/v1/short/{code}"]
+    U2[Client] --> LB2[Load balancer]
+    LB2 --> App2[App]
+    App2 -->|get code| Cache[(Cache Redis when configured)]
+    Cache -->|hit: long_url known| Upd[Postgres UPDATE hit_count + last_accessed_at]
+    Cache -->|miss| PG2[(Postgres SELECT)]
+    PG2 -->|not found| R404[404]
+    PG2 -->|found: fill cache then| Upd
+    Upd -->|ok| R302[302 Location long_url]
+    Upd -->|write fails| Err[error no Location]
+  end
+```
+
+### Sequence — Create and Redirect
 
 ```mermaid
 sequenceDiagram
-    participant User
+    participant Client
     participant LB as Load balancer
-    participant App as App servers
-    participant Cache
+    participant App
+    participant RL as Rate limiter
+    participant Cache as Cache Redis when configured
     participant PG as Postgres
 
     rect rgb(240, 248, 255)
-    Note over User,PG: Create
-    User->>LB: POST /api/v1/data/shorten {longURL, alias?}
+    Note over Client,PG: Create POST /api/v1/data/shorten
+    Client->>LB: POST {longURL, alias?}
     LB->>App: forward
-    App->>App: use alias or mint random base62 code
-    App->>PG: INSERT links (unique on code)
-    PG-->>App: row
-    App-->>User: 201 metadata
+    App->>RL: allow client IP
+    alt over limit
+        RL-->>App: deny
+        App-->>Client: 429 Retry-After
+    else allowed
+        RL-->>App: allow
+        App->>App: alias or mint base62
+        App->>PG: INSERT links unique code
+        alt alias taken
+            PG-->>App: unique violation
+            App-->>Client: 409
+        else inserted
+            PG-->>App: row
+            App-->>Client: 201 metadata
+            Note over App,Cache: create does not write cache
+        end
+    end
     end
 
     rect rgb(255, 248, 240)
-    Note over User,PG: Redirect
-    User->>LB: GET /api/v1/short/{code}
+    Note over Client,PG: Redirect GET /api/v1/short/{code}
+    Client->>LB: GET /api/v1/short/{code}
     LB->>App: forward
-    App->>Cache: get(code)
+    App->>Cache: get code
     alt cache hit
         Cache-->>App: long_url
-        App->>PG: increment hit_count
-        App-->>User: 302 Location long_url
+        App->>PG: UPDATE hit_count + last_accessed_at
+        PG-->>App: row
+        App-->>Client: 302 Location long_url
     else cache miss
         Cache-->>App: none
         App->>PG: SELECT by code
         alt not in DB
             PG-->>App: none
-            App-->>User: 404 invalid short URL
+            App-->>Client: 404
         else found
             PG-->>App: long_url
-            App->>Cache: set(code, long_url)
-            App->>PG: increment hit_count
-            App-->>User: 302 Location long_url
+            App->>Cache: set code to long_url
+            App->>PG: UPDATE hit_count + last_accessed_at
+            PG-->>App: row
+            App-->>Client: 302 Location long_url
         end
     end
     end
 ```
 
-### Redirect path
+### Sequence — Metadata (no cache, no hit bump)
 
-1. The user requests the short URL (`GET /api/v1/short/{code}`).
-2. The load balancer forwards the request to a web or app server.
-3. If the short code is in the cache, the app returns 302 to the long URL.
-4. On a cache miss, the app fetches the row from Postgres.
-5. If the code is not in the database, the short URL is invalid and the app returns 404.
-6. If the row is found, the app writes `code → long_url` into the cache and returns 302 to the long URL.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant LB as Load balancer
+    participant App
+    participant PG as Postgres
 
-A successful redirect also increments `hit_count` and sets `last_accessed_at` in Postgres. Metadata `GET /api/v1/data/{code}` does not use the cache.
+    Client->>LB: GET /api/v1/data/{code}
+    LB->>App: forward
+    App->>PG: SELECT by code
+    alt missing
+        PG-->>App: none
+        App-->>Client: 404
+    else found
+        PG-->>App: row
+        App-->>Client: 200 metadata hits last_accessed_at
+    end
+```
 
-### Create path
+Metadata reads Postgres only. It does not use Cache and does not increment `hit_count` / `last_accessed_at`.
 
-The app uses the request `alias` when present, otherwise mints a random base62 `code`, inserts the row into Postgres (unique on `code`), and returns 201. A taken alias is 409. Create does not write the cache. The first redirect fills it.
+### Path notes
 
-### IDs and uniqueness
+**Create:** rate limit → alias or mint base62 → `INSERT` unique `code` → `201` (or `409` if alias taken, `429` if over limit). No cache write.
 
-The running service uses a random base62 `code` as the primary key. There is no separate numeric id and no hash of the long URL.
+**Redirect:** cache get → on hit **or** after a DB hit: `UPDATE hit_count` + `last_accessed_at` → `302 Location`. DB miss → `404`. Cache fill only on the DB-hit path. If the hit write fails, the handler errors (no `Location`).
 
-At much higher write QPS, a distributed unique ID generator (Snowflake-style or range counters) encoded as base62 for the public code avoids random-collision retries. That switch is not cheap enough to make now. Keep random base62 plus the unique constraint.
+**IDs:** random base62 `code` is the primary key (optional alias uses the same column). No separate numeric id and no hash of the long URL. At much higher write QPS, a distributed unique ID encoded as base62 is the scale alternative; keep random base62 plus the unique constraint for now.
 
 ## API
 

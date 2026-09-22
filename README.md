@@ -30,6 +30,34 @@ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' \
 
 Local OrbStack steps stay under **Local run (OrbStack)** below.
 
+## Architecture
+
+Create and redirect share a load balancer and app instances. Postgres is the durable store. Cache (Redis when `REDIS_URL` is set, else process-local) is on the redirect path only — create never writes it.
+
+```mermaid
+flowchart TD
+  subgraph Create["Create POST /api/v1/data/shorten"]
+    C1[Client] --> CLB[Load balancer] --> CApp[App]
+    CApp -->|rate limit deny| C429[429]
+    CApp -->|alias or mint → INSERT| CPG[(Postgres)]
+    CPG --> CApp
+    CApp -->|ok| C201[201]
+    CApp -->|alias taken| C409[409]
+  end
+
+  subgraph Redirect["Redirect GET /api/v1/short/{code}"]
+    R1[Client] --> RLB[Load balancer] --> RApp[App]
+    RApp --> RCache[(Cache Redis when configured)]
+    RCache -->|hit or after DB hit| RUpd[Postgres UPDATE hits + last_accessed_at]
+    RCache -->|miss| RPG[(Postgres SELECT)]
+    RPG -->|miss| R404[404]
+    RPG -->|hit: fill cache| RUpd
+    RUpd --> R302[302 Location]
+  end
+```
+
+Metadata `GET /api/v1/data/{code}` is Postgres only (no cache, no hit increment). Sequence detail, rate-limit / 409 / 404 branches: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+
 ## API
 
 | Method | Path | Result |
