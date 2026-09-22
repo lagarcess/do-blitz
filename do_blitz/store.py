@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 from sqlalchemy import BigInteger, DateTime, String, Text, create_engine, delete, text, update
@@ -23,6 +23,7 @@ class Link:
     long_url: str
     created_at: datetime
     hit_count: int
+    last_accessed_at: datetime | None = None
 
 
 class LinkStore(Protocol):
@@ -56,6 +57,7 @@ class MemoryLinkStore:
             long_url=current.long_url,
             created_at=current.created_at,
             hit_count=current.hit_count + 1,
+            last_accessed_at=datetime.now(timezone.utc),
         )
         self._rows[code] = updated
         return updated
@@ -72,6 +74,9 @@ class LinkRow(Base):
     long_url: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     hit_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    last_accessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=text("NULL")
+    )
 
 
 def _from_row(row: LinkRow) -> Link:
@@ -80,6 +85,7 @@ def _from_row(row: LinkRow) -> Link:
         long_url=row.long_url,
         created_at=row.created_at,
         hit_count=row.hit_count,
+        last_accessed_at=row.last_accessed_at,
     )
 
 
@@ -87,6 +93,13 @@ class PostgresLinkStore:
     def __init__(self, database_url: str) -> None:
         self.engine = create_engine(sqlalchemy_url(database_url), pool_pre_ping=True)
         Base.metadata.create_all(self.engine)
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE links "
+                    "ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ DEFAULT NULL"
+                )
+            )
         self._session = sessionmaker(self.engine, expire_on_commit=False)
 
     def ping(self) -> bool:
@@ -100,6 +113,7 @@ class PostgresLinkStore:
             long_url=link.long_url,
             created_at=link.created_at,
             hit_count=link.hit_count,
+            last_accessed_at=link.last_accessed_at,
         )
         with self._session() as session:
             session.add(row)
@@ -118,7 +132,10 @@ class PostgresLinkStore:
         stmt = (
             update(LinkRow)
             .where(LinkRow.code == code)
-            .values(hit_count=LinkRow.hit_count + 1)
+            .values(
+                hit_count=LinkRow.hit_count + 1,
+                last_accessed_at=datetime.now(timezone.utc),
+            )
             .returning(LinkRow)
         )
         with self._session() as session:

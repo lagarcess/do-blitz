@@ -47,24 +47,25 @@ curl -s localhost:8000/health
 
 curl -s -X POST localhost:8000/api/v1/data/shorten \
   -H 'content-type: application/json' \
-  -d '{"longURL":"https://example.com/page"}'
-# 201 {"code":"CQfE0v","shortURL":"http://127.0.0.1:8000/api/v1/short/CQfE0v","longURL":"https://example.com/page","created_at":"…","hits":0}
+  -d '{"longURL":"https://example.com/page","alias":"promo1"}'
+# 201 {"code":"promo1","shortURL":"http://127.0.0.1:8000/api/v1/short/promo1","longURL":"https://example.com/page","created_at":"…","hits":0,"last_accessed_at":null}
 
-curl -sI localhost:8000/api/v1/short/CQfE0v
+curl -sI localhost:8000/api/v1/short/promo1
 # 302 Found
 # Location: https://example.com/page
 
-curl -s localhost:8000/api/v1/data/CQfE0v
-# {"code":"CQfE0v","shortURL":"http://127.0.0.1:8000/api/v1/short/CQfE0v","longURL":"https://example.com/page","created_at":"…","hits":1}
+curl -s localhost:8000/api/v1/data/promo1
+# {"code":"promo1","shortURL":"http://127.0.0.1:8000/api/v1/short/promo1","longURL":"https://example.com/page","created_at":"…","hits":1,"last_accessed_at":"…"}
 ```
 
 Validation:
 
 - `longURL` must be `http` or `https` and at most 2048 characters (else 422)
+- Optional `alias` must be base62 `[0-9a-zA-Z]`, 3-32 characters, and not reserved (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive). Bad alias → 422. Taken alias → 409.
 - Unknown code → 404
 - More than `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) shorten requests from one client IP in 60 seconds → 429. The first `X-Forwarded-For` hop is the client IP when that header is set.
 
-Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert collides.
+Auto codes are base62 `[0-9a-zA-Z]`. Length starts at 6 and grows if the insert collides. `last_accessed_at` is when the link was last clicked (null until the first redirect). `hits` is how many times.
 
 ## Tests
 
