@@ -22,7 +22,7 @@ def create_link(
     source = candidates if candidates is not None else iter_candidate_codes()
     last_conflict: str | None = None
     for code in source:
-        link = Link(code=code, long_url=url, created_at=stamp, hits=0)
+        link = Link(code=code, long_url=url, created_at=stamp, hit_count=0)
         try:
             store.insert(link)
         except CodeAlreadyExists:
@@ -37,4 +37,4 @@ def get_link(store: LinkStore, code: str) -> Link | None:
 
 
 def resolve_link(store: LinkStore, code: str) -> Link | None:
-    return store.increment_hits(code)
+    return store.increment_hit_count(code)

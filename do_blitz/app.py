@@ -20,7 +20,7 @@ def _out(link: Link, request: Request, settings: Settings) -> LinkOut:
         shortURL=_short_url(request, link.code, settings),
         longURL=link.long_url,
         created_at=link.created_at,
-        hits=link.hits,
+        hits=link.hit_count,
     )
 
 

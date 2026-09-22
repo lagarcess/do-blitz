@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, delete, text, update
+from sqlalchemy import BigInteger, DateTime, String, Text, create_engine, delete, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -22,14 +22,14 @@ class Link:
     code: str
     long_url: str
     created_at: datetime
-    hits: int
+    hit_count: int
 
 
 class LinkStore(Protocol):
     def ping(self) -> bool: ...
     def insert(self, link: Link) -> None: ...
     def get(self, code: str) -> Link | None: ...
-    def increment_hits(self, code: str) -> Link | None: ...
+    def increment_hit_count(self, code: str) -> Link | None: ...
 
 
 class MemoryLinkStore:
@@ -47,7 +47,7 @@ class MemoryLinkStore:
     def get(self, code: str) -> Link | None:
         return self._rows.get(code)
 
-    def increment_hits(self, code: str) -> Link | None:
+    def increment_hit_count(self, code: str) -> Link | None:
         current = self._rows.get(code)
         if current is None:
             return None
@@ -55,7 +55,7 @@ class MemoryLinkStore:
             code=current.code,
             long_url=current.long_url,
             created_at=current.created_at,
-            hits=current.hits + 1,
+            hit_count=current.hit_count + 1,
         )
         self._rows[code] = updated
         return updated
@@ -71,7 +71,7 @@ class LinkRow(Base):
     code: Mapped[str] = mapped_column(String(32), primary_key=True)
     long_url: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hit_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
 
 
 def _from_row(row: LinkRow) -> Link:
@@ -79,7 +79,7 @@ def _from_row(row: LinkRow) -> Link:
         code=row.code,
         long_url=row.long_url,
         created_at=row.created_at,
-        hits=row.hits,
+        hit_count=row.hit_count,
     )
 
 
@@ -99,7 +99,7 @@ class PostgresLinkStore:
             code=link.code,
             long_url=link.long_url,
             created_at=link.created_at,
-            hits=link.hits,
+            hit_count=link.hit_count,
         )
         with self._session() as session:
             session.add(row)
@@ -114,11 +114,11 @@ class PostgresLinkStore:
             row = session.get(LinkRow, code)
             return _from_row(row) if row is not None else None
 
-    def increment_hits(self, code: str) -> Link | None:
+    def increment_hit_count(self, code: str) -> Link | None:
         stmt = (
             update(LinkRow)
             .where(LinkRow.code == code)
-            .values(hits=LinkRow.hits + 1)
+            .values(hit_count=LinkRow.hit_count + 1)
             .returning(LinkRow)
         )
         with self._session() as session:

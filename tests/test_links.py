@@ -85,7 +85,7 @@ def test_create_retries_after_code_collision() -> None:
             code="taken1",
             long_url="https://example.com/first",
             created_at=datetime.now(timezone.utc),
-            hits=0,
+            hit_count=0,
         )
     )
     link = create_link(store, "https://example.com/second", candidates=["taken1", "fresh9"])

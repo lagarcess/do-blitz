@@ -8,7 +8,7 @@ TODO: diagram TBD (awaiting Platform + plan lock).
 - `do_blitz/config.py` — `PORT`, `LOG_LEVEL`, `DATABASE_URL`, `PUBLIC_BASE_URL`
 - `do_blitz/models.py` — Pydantic v2 request and metadata payloads (`longURL` / `shortURL`)
 - `do_blitz/codes.py` — base62 alphabet and short-then-longer generators
-- `do_blitz/service.py` — create / lookup / resolve (hits increment)
+- `do_blitz/service.py` — create / lookup / resolve (`hit_count` increment)
 - `do_blitz/store.py` — `LinkStore` protocol, `MemoryLinkStore`, `PostgresLinkStore`
 
 There are no PUT, PATCH, or DELETE routes. Codes are immutable after insert. Custom aliases are out of this lock.
@@ -25,10 +25,23 @@ TODO
 | --- | --- | --- |
 | POST | `/api/v1/data/shorten` | 201 metadata. Body `{"longURL": "<string>"}`. |
 | GET | `/api/v1/data/{shortCode}` | 200 metadata JSON. No redirect. Unknown code is 404. |
-| GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hits`. |
+| GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`). |
 | GET | `/health` | 200 `{"status":"ok"}`. |
 
-Metadata fields: `code`, `shortURL`, `longURL`, `created_at`, `hits`.
+Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`.
+
+## Data model (`links`)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `code` | text / varchar, unique PK | base62 public key |
+| `long_url` | text | original URL |
+| `created_at` | timestamptz | insert time |
+| `hit_count` | bigint, default 0 | incremented on redirect |
+
+Rows are immutable aside from `hit_count`. No update/delete routes and no soft-delete column.
+Each create may mint a **new** code for the same `long_url` (no “same URL → same code” idempotency unless locked later).
+API JSON still names the counter `hits` (maps from `hit_count`).
 
 `shortURL` is `{PUBLIC_BASE_URL or request base}/api/v1/short/{code}`.
 
@@ -59,7 +72,7 @@ Implications:
 
 - Managed Postgres for the durable unique `code` index
 - App Platform multi-instance; uniqueness is the database constraint, not an in-process lock
-- `GET /api/v1/short/{shortCode}` is the hot read path (lookup + `hits` increment)
+- `GET /api/v1/short/{shortCode}` is the hot read path (lookup + `hit_count` increment)
 - A 6-character base62 space is 62^6 ≈ 56.8B codes. Collision then lengthens. 7 characters is 62^7 ≈ 3.5T
 
 ## HA, uniqueness, idempotency
@@ -70,7 +83,7 @@ Concurrency control is the unique constraint on `code`. Two instances that roll 
 
 Create is not naturally idempotent. A client that retries after a lost 201 can insert a second code for the same long URL. On unknown outcome, GET `/api/v1/data/{shortCode}` if the client already saw a code; otherwise treat a retry as a new link.
 
-`hits` increment is a single `UPDATE … SET hits = hits + 1` per redirect.
+`hit_count` increment is a single `UPDATE … SET hit_count = hit_count + 1` per redirect.
 
 ## Out of scope
 
