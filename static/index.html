@@ -15,12 +15,14 @@
     button { margin-top: 1rem; width: 100%; padding: .7rem 1rem; border: 0; border-radius: 8px; background: #3b82f6; color: white; font-weight: 600; cursor: pointer; }
     button.secondary { background: #24304a; margin-top: .5rem; }
     button:disabled { opacity: .6; cursor: wait; }
-    .err { margin-top: .75rem; color: #fca5a5; font-size: .9rem; white-space: pre-wrap; }
     .ok { margin-top: 1rem; padding: .9rem; border-radius: 8px; background: #0b1220; border: 1px solid #31415f; }
     .ok a { color: #93c5fd; word-break: break-all; }
     .meta { margin: .35rem 0 0; color: #9db0d0; font-size: .85rem; }
     nav { margin-top: 1rem; font-size: .9rem; }
     nav a { color: #93c5fd; }
+    .toast { position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%); z-index: 10; max-width: min(32rem, calc(100% - 2rem)); padding: .65rem .9rem; border-radius: 8px; background: #121a2b; border: 1px solid #24304a; color: #e8eefc; font-size: .9rem; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+    .toast.success { color: #86efac; background: #0f2419; border-color: #166534; }
+    .toast.error { color: #fca5a5; background: #2a1212; border-color: #7f1d1d; }
   </style>
 </head>
 <body>
@@ -34,70 +36,113 @@
       <input id="alias" name="alias" type="text" minlength="3" maxlength="32" pattern="[0-9A-Za-z]*" placeholder="promo1" />
       <button type="submit" id="submit">Shorten</button>
     </form>
-    <div id="error" class="err" hidden></div>
     <div id="result" class="ok" hidden>
       <div><strong>Short URL</strong></div>
       <a id="shortURL" href="#" target="_blank" rel="noopener"></a>
       <p class="meta" id="meta"></p>
       <button type="button" class="secondary" id="copy">Copy short URL</button>
+      <button type="button" class="secondary" id="refresh">Refresh stats</button>
     </div>
     <nav><a href="/redoc">API docs (ReDoc)</a> · <a href="/docs">Swagger</a></nav>
   </main>
+  <div id="toast" class="toast" role="status" hidden></div>
   <script>
     const form = document.getElementById("form");
-    const errorEl = document.getElementById("error");
     const resultEl = document.getElementById("result");
     const shortEl = document.getElementById("shortURL");
     const metaEl = document.getElementById("meta");
     const submitBtn = document.getElementById("submit");
     const copyBtn = document.getElementById("copy");
+    const refreshBtn = document.getElementById("refresh");
+    const toastEl = document.getElementById("toast");
+    let lastCode = null;
+    let toastTimer = null;
+
+    function formatMeta(data) {
+      return "code " + data.code + " · hits " + data.hits +
+        (data.last_accessed_at ? " · last click " + data.last_accessed_at : " · not clicked yet");
+    }
+
+    function apiErrorMessage(data, res) {
+      const detail = data && data.detail;
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) return detail.map((d) => d.msg || JSON.stringify(d)).join("\n");
+      if (res) return res.status + " " + res.statusText;
+      return "Network error";
+    }
+
+    function showToast(kind, message) {
+      toastEl.textContent = message;
+      toastEl.className = "toast " + kind;
+      toastEl.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastEl.hidden = true; }, kind === "error" ? 4500 : 2000);
+    }
+
+    function showResult(data) {
+      if (data.shortURL) {
+        shortEl.href = data.shortURL;
+        shortEl.textContent = data.shortURL;
+      }
+      metaEl.textContent = formatMeta(data);
+      resultEl.hidden = false;
+    }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      errorEl.hidden = true;
-      resultEl.hidden = true;
       submitBtn.disabled = true;
       const longURL = document.getElementById("longURL").value.trim();
       const aliasRaw = document.getElementById("alias").value.trim();
       const body = { longURL };
       if (aliasRaw) body.alias = aliasRaw;
       try {
-        const res = await fetch("/api/v1/data/shorten", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const detail = data.detail;
-          const msg = typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-              ? detail.map((d) => d.msg || JSON.stringify(d)).join("\n")
-              : res.status + " " + res.statusText;
-          throw new Error(msg);
+        let res;
+        try {
+          res = await fetch("/api/v1/data/shorten", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+        } catch {
+          throw new Error(apiErrorMessage(null, null));
         }
-        shortEl.href = data.shortURL;
-        shortEl.textContent = data.shortURL;
-        metaEl.textContent = "code " + data.code + " · hits " + data.hits +
-          (data.last_accessed_at ? " · last click " + data.last_accessed_at : " · not clicked yet");
-        resultEl.hidden = false;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(apiErrorMessage(data, res));
+        lastCode = data.code;
+        showResult(data);
       } catch (err) {
-        errorEl.textContent = err.message || String(err);
-        errorEl.hidden = false;
+        showToast("error", err.message || String(err));
       } finally {
         submitBtn.disabled = false;
       }
     });
 
     copyBtn.addEventListener("click", async () => {
-      const text = shortEl.textContent;
       try {
-        await navigator.clipboard.writeText(text);
-        copyBtn.textContent = "Copied";
-        setTimeout(() => { copyBtn.textContent = "Copy short URL"; }, 1500);
+        await navigator.clipboard.writeText(shortEl.textContent);
+        showToast("success", "Copied");
       } catch {
-        copyBtn.textContent = "Copy failed";
+        showToast("error", "Copy failed");
+      }
+    });
+
+    refreshBtn.addEventListener("click", async () => {
+      if (!lastCode) return;
+      refreshBtn.disabled = true;
+      try {
+        let res;
+        try {
+          res = await fetch("/api/v1/data/" + encodeURIComponent(lastCode));
+        } catch {
+          throw new Error(apiErrorMessage(null, null));
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(apiErrorMessage(data, res));
+        showResult(data);
+      } catch (err) {
+        showToast("error", err.message || String(err));
+      } finally {
+        refreshBtn.disabled = false;
       }
     });
   </script>
