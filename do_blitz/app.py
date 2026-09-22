@@ -8,7 +8,7 @@ from do_blitz.config import Settings, load_settings
 from do_blitz.models import HealthOut, LinkOut, ShortenIn
 from do_blitz.rate_limit import RateLimiter, WINDOW_SECONDS, build_limiter
 from do_blitz.service import create_link, get_link, resolve_link
-from do_blitz.store import Link, LinkStore, build_store
+from do_blitz.store import CodeAlreadyExists, Link, LinkStore, build_store
 
 
 def _client_ip(request: Request) -> str:
@@ -34,6 +34,7 @@ def _out(link: Link, request: Request, settings: Settings) -> LinkOut:
         longURL=link.long_url,
         created_at=link.created_at,
         hits=link.hit_count,
+        last_accessed_at=link.last_accessed_at,
     )
 
 
@@ -63,6 +64,7 @@ def create_app(
         response_model=LinkOut,
         status_code=201,
         responses={
+            409: {"description": "Alias already exists."},
             429: {"description": "Too many shorten requests from this client IP."},
         },
     )
@@ -74,7 +76,13 @@ def create_app(
                 detail="rate limit exceeded: too many shorten requests from this client",
                 headers={"Retry-After": str(WINDOW_SECONDS)},
             )
-        link = create_link(store, url=body.longURL)
+        try:
+            link = create_link(store, url=body.longURL, alias=body.alias)
+        except CodeAlreadyExists:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="alias already exists",
+            )
         return _out(link, request, settings)
 
     @app.get("/api/v1/data/{shortCode}", response_model=LinkOut)

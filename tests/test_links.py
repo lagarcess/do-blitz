@@ -17,10 +17,11 @@ def test_create_happy_path(client) -> None:
     body = response.json()
     assert body["longURL"] == "https://example.com/page"
     assert body["hits"] == 0
+    assert body["last_accessed_at"] is None
     assert all(ch in ALPHABET for ch in body["code"])
     assert body["shortURL"] == f"http://testserver/api/v1/short/{body['code']}"
     assert body["created_at"]
-    assert set(body) == {"code", "shortURL", "longURL", "created_at", "hits"}
+    assert set(body) == {"code", "shortURL", "longURL", "created_at", "hits", "last_accessed_at"}
 
 
 def test_redirect_increments_hits(client) -> None:
@@ -35,6 +36,7 @@ def test_redirect_increments_hits(client) -> None:
     meta = client.get(f"/api/v1/data/{code}")
     assert meta.status_code == 200
     assert meta.json()["hits"] == 1
+    assert meta.json()["last_accessed_at"] is not None
     assert meta.json()["longURL"] == "https://example.com/dest"
     assert meta.json()["code"] == code
     assert meta.json()["shortURL"] == f"http://testserver/api/v1/short/{code}"
@@ -74,8 +76,78 @@ def test_openapi_documents_redirect_302(client) -> None:
     spec = client.get("/openapi.json").json()
     path = spec["paths"]["/api/v1/short/{shortCode}"]["get"]
     assert "302" in path["responses"]
-    assert spec["paths"]["/api/v1/data/shorten"]["post"]["responses"]["201"]
+    shorten = spec["paths"]["/api/v1/data/shorten"]["post"]
+    assert shorten["responses"]["201"]
+    assert "409" in shorten["responses"]
     assert spec["paths"]["/api/v1/data/{shortCode}"]["get"]["responses"]["200"]
+    schemas = spec["components"]["schemas"]
+    alias = schemas["ShortenIn"]["properties"]["alias"]
+    string_schema = next(item for item in alias["anyOf"] if item.get("type") == "string")
+    assert string_schema["minLength"] == 3
+    assert string_schema["maxLength"] == 32
+    assert string_schema["pattern"] == "^[0-9a-zA-Z]+$"
+    assert "last_accessed_at" in schemas["LinkOut"]["properties"]
+
+
+def test_create_with_alias(client) -> None:
+    response = client.post(
+        "/api/v1/data/shorten",
+        json={"longURL": "https://example.com/page", "alias": "promo1"},
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["code"] == "promo1"
+    assert body["shortURL"] == "http://testserver/api/v1/short/promo1"
+    assert body["longURL"] == "https://example.com/page"
+    assert body["hits"] == 0
+    assert body["last_accessed_at"] is None
+
+
+def test_bad_alias_422(client) -> None:
+    url = "https://example.com/page"
+    assert client.post("/api/v1/data/shorten", json={"longURL": url, "alias": "ab"}).status_code == 422
+    assert (
+        client.post("/api/v1/data/shorten", json={"longURL": url, "alias": "a" * 33}).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/v1/data/shorten", json={"longURL": url, "alias": "my-link"}).status_code
+        == 422
+    )
+    for reserved in ("api", "HEALTH", "Docs", "short", "data", "v1"):
+        assert (
+            client.post("/api/v1/data/shorten", json={"longURL": url, "alias": reserved}).status_code
+            == 422
+        )
+
+
+def test_alias_conflict_409(client) -> None:
+    first = client.post(
+        "/api/v1/data/shorten",
+        json={"longURL": "https://example.com/a", "alias": "taken1"},
+    )
+    assert first.status_code == 201
+    second = client.post(
+        "/api/v1/data/shorten",
+        json={"longURL": "https://example.com/b", "alias": "taken1"},
+    )
+    assert second.status_code == 409
+    assert second.json() == {"detail": "alias already exists"}
+
+
+def test_redirect_sets_last_accessed_at(client) -> None:
+    created = client.post(
+        "/api/v1/data/shorten",
+        json={"longURL": "https://example.com/dest"},
+    ).json()
+    assert created["last_accessed_at"] is None
+    code = created["code"]
+    redirect = client.get(f"/api/v1/short/{code}", follow_redirects=False)
+    assert redirect.status_code == 302
+    meta = client.get(f"/api/v1/data/{code}").json()
+    assert meta["hits"] == 1
+    assert meta["last_accessed_at"] is not None
+    datetime.fromisoformat(meta["last_accessed_at"].replace("Z", "+00:00"))
 
 
 def test_create_retries_after_code_collision() -> None:
@@ -91,3 +163,9 @@ def test_create_retries_after_code_collision() -> None:
     link = create_link(store, "https://example.com/second", candidates=["taken1", "fresh9"])
     assert link.code == "fresh9"
     assert store.get("fresh9") is not None
+
+
+def test_create_skips_reserved_random_candidate() -> None:
+    store = MemoryLinkStore()
+    link = create_link(store, "https://example.com/second", candidates=["health", "fresh9"])
+    assert link.code == "fresh9"

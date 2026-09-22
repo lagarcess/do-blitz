@@ -45,6 +45,7 @@ def test_redirect_cache_hit_skips_store_get() -> None:
     assert link is not None
     assert link.long_url == "https://example.com/dest"
     assert link.hit_count == 1
+    assert link.last_accessed_at is not None
 
 
 def test_redirect_db_miss_is_404_and_does_not_fill_cache(client, cache) -> None:

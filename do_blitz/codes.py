@@ -4,9 +4,16 @@ import random
 from collections.abc import Iterator
 
 ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+ALIAS_MIN_LEN = 3
+ALIAS_MAX_LEN = 32
 INITIAL_CODE_LENGTH = 6
 MAX_CODE_LENGTH = 12
 ATTEMPTS_PER_LENGTH = 8
+RESERVED_CODES = frozenset({"api", "health", "docs", "short", "data", "v1"})
+
+
+def is_reserved_code(code: str) -> bool:
+    return code.lower() in RESERVED_CODES
 
 
 def generate_code(length: int, rng: random.Random | None = None) -> str:

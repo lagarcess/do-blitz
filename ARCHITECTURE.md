@@ -11,7 +11,7 @@
 - `do_blitz/cache.py` — `RedirectCache` protocol, `MemoryRedirectCache`, `RedisRedirectCache`
 - `do_blitz/rate_limit.py` — `RateLimiter` protocol, `MemoryRateLimiter`, `RedisRateLimiter`
 
-There are no PUT, PATCH, or DELETE routes. Codes are immutable after insert. Custom aliases are out of this lock.
+There are no PUT, PATCH, or DELETE routes. Codes are immutable after insert. Create may supply an optional `alias`.
 
 ## Diagram
 
@@ -40,9 +40,9 @@ sequenceDiagram
 
     rect rgb(240, 248, 255)
     Note over User,PG: Create
-    User->>LB: POST /api/v1/data/shorten {longURL}
+    User->>LB: POST /api/v1/data/shorten {longURL, alias?}
     LB->>App: forward
-    App->>App: mint random base62 code
+    App->>App: use alias or mint random base62 code
     App->>PG: INSERT links (unique on code)
     PG-->>App: row
     App-->>User: 201 metadata
@@ -82,11 +82,11 @@ sequenceDiagram
 5. If the code is not in the database, the short URL is invalid and the app returns 404.
 6. If the row is found, the app writes `code → long_url` into the cache and returns 302 to the long URL.
 
-A successful redirect also increments `hit_count` in Postgres. Metadata `GET /api/v1/data/{code}` does not use the cache.
+A successful redirect also increments `hit_count` and sets `last_accessed_at` in Postgres. Metadata `GET /api/v1/data/{code}` does not use the cache.
 
 ### Create path
 
-The app mints a random base62 `code`, inserts the row into Postgres (unique on `code`), and returns 201. Create does not write the cache. The first redirect fills it.
+The app uses the request `alias` when present, otherwise mints a random base62 `code`, inserts the row into Postgres (unique on `code`), and returns 201. A taken alias is 409. Create does not write the cache. The first redirect fills it.
 
 ### IDs and uniqueness
 
@@ -98,12 +98,12 @@ At much higher write QPS, a distributed unique ID generator (Snowflake-style or 
 
 | Method | Path | Result |
 | --- | --- | --- |
-| POST | `/api/v1/data/shorten` | 201 metadata. Body `{"longURL": "<string>"}`. 429 after `RATE_LIMIT_SHORTEN_PER_MIN` requests in a 60-second window from the same client IP. |
+| POST | `/api/v1/data/shorten` | 201 metadata. Body `{"longURL": "<string>", "alias": "<optional>"}`. 409 if `alias` is already a code. 429 after `RATE_LIMIT_SHORTEN_PER_MIN` requests in a 60-second window from the same client IP. |
 | GET | `/api/v1/data/{shortCode}` | 200 metadata JSON. No redirect. Unknown code is 404. |
-| GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`). |
+| GET | `/api/v1/short/{shortCode}` | **302 Found**. `Location` is the original long URL. Increments `hit_count` (JSON field `hits`) and sets `last_accessed_at`. |
 | GET | `/health` | 200 `{"status":"ok"}`. |
 
-Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`.
+Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`, `last_accessed_at`. `last_accessed_at` answers "when was this link last clicked?". `hits` still answers how many times.
 
 ## Data model (`links`)
 
@@ -113,8 +113,9 @@ Metadata fields (API JSON): `code`, `shortURL`, `longURL`, `created_at`, `hits`.
 | `long_url` | text | original URL |
 | `created_at` | timestamptz | insert time |
 | `hit_count` | bigint, default 0 | incremented on redirect |
+| `last_accessed_at` | timestamptz, null | set on each successful redirect |
 
-Rows are immutable aside from `hit_count`. No update/delete routes and no soft-delete column.
+Rows are immutable aside from `hit_count` and `last_accessed_at`. No update/delete routes and no soft-delete column.
 Each create may mint a **new** code for the same `long_url` (no “same URL → same code” idempotency unless locked later).
 API JSON still names the counter `hits` (maps from `hit_count`).
 
@@ -123,7 +124,9 @@ API JSON still names the counter `hits` (maps from `hit_count`).
 Validation at the HTTP boundary (Pydantic, OpenAPI at `/docs`):
 
 - `longURL` must be `http` or `https`, max 2048 characters
-- bad body → 422
+- `alias` is optional. When present it must be base62 `[0-9a-zA-Z]`, length 3-32, and must not be a reserved name (`api`, `health`, `docs`, `short`, `data`, `v1`, case-insensitive)
+- taken `alias` → 409
+- bad body or bad alias → 422
 - invalid short URL (unknown code) → 404
 - too many `POST /api/v1/data/shorten` from one client IP → 429 `{"detail":"rate limit exceeded: too many shorten requests from this client"}` with `Retry-After: 60`
 
@@ -169,7 +172,7 @@ Postgres is the store because the unique constraint on `code` is the concurrency
 
 ## Analytics
 
-`hit_count` (API field `hits`) is a redirect counter. The row does not record when a click happened. Time-series click analytics need an event log or warehouse, which this service does not write. A `last_accessed_at` column on redirect would be a cheap last-click stamp later. It is not in the schema now.
+`hit_count` (API field `hits`) is how many times the short URL was clicked. `last_accessed_at` is when it was last clicked (null until the first redirect). Time-series click analytics still need an event log or warehouse, which this service does not write.
 
 ## HA, uniqueness, idempotency
 
@@ -179,7 +182,7 @@ Concurrency control is the unique constraint on `code`. Two instances that roll 
 
 Create is not naturally idempotent. A client that retries after a lost 201 can insert a second code for the same long URL. On unknown outcome, GET `/api/v1/data/{shortCode}` if the client already saw a code; otherwise treat a retry as a new link.
 
-`hit_count` increment is a single `UPDATE … SET hit_count = hit_count + 1` per redirect.
+`hit_count` increment is a single `UPDATE … SET hit_count = hit_count + 1, last_accessed_at = <now>` per redirect.
 
 ## Availability, consistency, and reliability
 
@@ -189,7 +192,7 @@ The [App Platform SLA](https://www.digitalocean.com/sla/app-platform) commits to
 
 ### Consistency
 
-Create is strongly consistent. The unique primary key on `code` is the source of truth. Codes are immutable, so `long_url` does not change after insert. The first redirect after create can miss the cache and read Postgres. That is a brief cold cache, not a stale `long_url`. `hit_count` is best-effort under concurrency. Each successful redirect runs one `UPDATE … SET hit_count = hit_count + 1`. The count can drift if that write fails after the 302, or if the 302 never runs the increment.
+Create is strongly consistent. The unique primary key on `code` is the source of truth. Codes are immutable, so `long_url` does not change after insert. The first redirect after create can miss the cache and read Postgres. That is a brief cold cache, not a stale `long_url`. `hit_count` and `last_accessed_at` are best-effort under concurrency. Each successful redirect runs one `UPDATE … SET hit_count = hit_count + 1, last_accessed_at = <now>`. The count and stamp can drift if that write fails after the 302, or if the 302 never runs the increment.
 
 ### Reliability
 
@@ -197,7 +200,7 @@ Managed Postgres with a standby fails over automatically. See [PostgreSQL featur
 
 ## Out of scope
 
-DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisioning, update/delete, auth, custom aliases.
+DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisioning, update/delete, auth.
 
 ## Decision trades
 
@@ -212,4 +215,5 @@ DigitalOcean tokens, App Platform / Managed Postgres / Managed Redis provisionin
 - Rate limit: in-process fixed window by default, Redis when `REDIS_URL` is set → instances share one counter; 429 after `RATE_LIMIT_SHORTEN_PER_MIN` (default 60) per client IP on `POST /api/v1/data/shorten`. Redirect stays unlimited so a viral link or a shared NAT is not blocked.
 - App tier: stateless App Platform containers behind the platform load balancer, no sticky sessions → scale by adding or removing instances. HA needs at least two containers for load-balancer failover. Autoscaling is plan-dependent.
 - Database: one Postgres primary plus a standby before any shard → unique `code` and transactions stay on one writer. Shard only when that primary cannot hold writes or the 365B-row store.
-- Analytics: `hits` is a click count, not a click time → keep the counter. An event log or warehouse is the path for when-they-clicked.
+- Analytics: `hits` is how many clicks, `last_accessed_at` is the last click time → last-click only. An event log or warehouse is the path for a click history.
+- Custom alias: optional `alias` on create, unique `code` constraint → 409 on conflict. Reserved path tokens stay out of the code space.
